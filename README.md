@@ -19,7 +19,7 @@ acc config default-contest-dirname-format 'contests/{ContestID}'
 ```
 aclogin
 1. ブラウザからAtCoderにログイン
-2. 開発者モード(F12)を開きApplication→cookies→https://atcoder.jpと辿る
+2. 開発者モード(F12)を開きApplication→cookies→https://atcoder.jp と辿る
 3. 表の中の**REVEL_SESSION**という項目のValueをコピー
 4. terminalで```aclogin```→コピーしたものをそのままペースト
 
