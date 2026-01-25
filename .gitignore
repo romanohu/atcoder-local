@@ -10,5 +10,8 @@ wheels/
 .venv
 
 # contests
-contests/*
+test/
+a.out
+!contests/*/
 !contests/README.md
+!contests/**/*.cpp
