@@ -16,6 +16,7 @@ acc check-oj
 acc config default-task-choice all
 acc config default-template "$(pwd)/template/cpp"
 acc config default-contest-dirname-format 'contests/{ContestID}'
+acc config default-test-dirname-format test
 ```
 aclogin
 1. ブラウザからAtCoderにログイン

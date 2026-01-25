@@ -1,11 +1,12 @@
 # コマンド
+## acc
 コンテストのインストール
 ```sh
 acc new {constest_name}
 ```
-書いたコードのテスト
+書いたコードのテスト(<test_number>.outが必要)
 ```sh
-acc test
+oj test
 ```
 コンテストの提出
 ```sh
@@ -13,4 +14,9 @@ acc test
 acc submit
 # or
 acc s
+```
+## g++
+コンパイル
+```sh
+g++ -o a.out main.cpp
 ```
