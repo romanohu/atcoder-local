@@ -4,6 +4,11 @@
 ```sh
 acc new {constest_name}
 ```
+テストの再インストール
+```sh
+# contests/<contest_name>で
+acc add --choice all --no-template -f
+```
 書いたコードのテスト(<test_number>.outが必要)
 ```sh
 oj test
