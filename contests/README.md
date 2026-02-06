@@ -11,7 +11,7 @@ acc add --choice all --no-template -f
 ```
 書いたコードのテスト(<test_number>.outが必要)
 ```sh
-oj test
+uv run oj test
 ```
 コンテストの提出
 ```sh
