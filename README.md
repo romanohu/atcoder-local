@@ -26,25 +26,7 @@ aclogin
 
 ---
 > acc submitについて
-> ```acc submit```を使うとエラーが出て提出できないことがある．これはAtCoder側の仕様変更によるものである．そのためojの以下の部分を修正する．
-```sh 
-code .venv/lib/python3.10/site-packages/onlinejudge/service/atcoder.py
-```
-```python
-# 590~601行目を以下に書き換える
-parsed_memory_limit = re.search(r'^(メモリ制限|Memory Limit): ([0-9.]+) (KiB|MiB)', memory_limit)
-
-assert parsed_memory_limit
-
-memory_limit_value = parsed_memory_limit.group(2)
-memory_limit_unit = parsed_memory_limit.group(3)
-if memory_limit_unit == 'KiB':
-    memory_limit_byte = int(float(memory_limit_value) * 1000)
-elif memory_limit_unit == 'MiB':
-    memory_limit_byte = int(float(memory_limit_value) * 1000 * 1000)
-else:
-    assert False
-```
+使用できないらしい(厳密にはコンテスト開催時にだけ使用できる?)
 
 ---
 **参考にした記事**
