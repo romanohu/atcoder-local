@@ -24,6 +24,25 @@ aclogin
 3. 表の中の**REVEL_SESSION**という項目のValueをコピー
 4. terminalで```aclogin```→コピーしたものをそのままペースト
 
+## `memo.md` 自動生成（任意）
+`acc new` 実行後に `contests/<contest-id>/memo.md` を自動生成する場合は、
+`acc` をラップします。
+
+```sh
+source "$(pwd)/tools/acc-wrapper.zsh"
+```
+
+有効化後に `acc new abc454` を実行すると、`memo.md` に次の形式でテンプレートが作成されます。
+
+```md
+# abc454
+
+## a
+
+## b
+...
+```
+
 ---
 > acc submitについて
 使用できないらしい(厳密にはコンテスト開催時にだけ使用できる?)

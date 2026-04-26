@@ -2,8 +2,9 @@
 ## acc
 コンテストのインストール
 ```sh
-acc new {constest_name}
+acc new {contest_name}
 ```
+`tools/acc-wrapper.zsh` を読み込んでいる場合は、同時に `memo.md` も自動生成される。
 テストの再インストール
 ```sh
 # contests/<contest_name>で
