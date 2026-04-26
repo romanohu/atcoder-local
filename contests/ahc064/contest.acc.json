@@ -1,0 +1,20 @@
+{
+  "contest": {
+    "id": "ahc064",
+    "title": "JR WEST and ALGO ARTIS Programming Contest (AtCoder Heuristic Contest 064)",
+    "url": "https://atcoder.jp/contests/ahc064"
+  },
+  "tasks": [
+    {
+      "id": "ahc064_a",
+      "label": "A",
+      "title": "Non-Crossing Railcar Rearrangement",
+      "url": "https://atcoder.jp/contests/ahc064/tasks/ahc064_a",
+      "directory": {
+        "path": "a",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    }
+  ]
+}
