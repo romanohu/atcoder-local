@@ -5,6 +5,13 @@
 - [aclogin](https://github.com/key-moon/aclogin)
 
 ## セットアップ
+クローン
+```sh
+git clone <url>
+# 既存のcontests/ が不要なら
+rm -rf ./contests
+```
+
 ツールのインストール
 ```sh
 uv sync
@@ -26,13 +33,13 @@ aclogin
 
 ## `memo.md` 自動生成（任意）
 `acc new` 実行後に `contests/<contest-id>/memo.md` を自動生成する場合は、
-`acc` をラップします。
+`acc` をラップします
 
 ```sh
 source "$(pwd)/tools/acc-wrapper.zsh"
 ```
 
-有効化後に `acc new abc454` を実行すると、`memo.md` に次の形式でテンプレートが作成されます。
+有効化後に `acc new abc454` を実行すると、`memo.md` に次の形式でテンプレートが作成されます
 
 ```md
 # abc454
