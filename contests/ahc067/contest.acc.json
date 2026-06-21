@@ -1,0 +1,20 @@
+{
+  "contest": {
+    "id": "ahc067",
+    "title": "AtCoder Heuristic Contest 067",
+    "url": "https://atcoder.jp/contests/ahc067"
+  },
+  "tasks": [
+    {
+      "id": "ahc067_a",
+      "label": "A",
+      "title": "Castle Renovation with Linked Doors",
+      "url": "https://atcoder.jp/contests/ahc067/tasks/ahc067_a",
+      "directory": {
+        "path": "a",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    }
+  ]
+}
