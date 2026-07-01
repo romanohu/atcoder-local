@@ -1,0 +1,108 @@
+{
+  "contest": {
+    "id": "adt_all_20260701_2",
+    "title": "AtCoder Daily Training ALL 2026/07/01 18:00start",
+    "url": "https://atcoder.jp/contests/adt_all_20260701_2"
+  },
+  "tasks": [
+    {
+      "id": "abc364_a",
+      "label": "A",
+      "title": "Glutton Takahashi",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc364_a",
+      "directory": {
+        "path": "a",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc245_a",
+      "label": "B",
+      "title": "Good morning",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc245_a",
+      "directory": {
+        "path": "b",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc396_b",
+      "label": "C",
+      "title": "Card Pile",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc396_b",
+      "directory": {
+        "path": "c",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc379_b",
+      "label": "D",
+      "title": "Strawberries",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc379_b",
+      "directory": {
+        "path": "d",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc306_c",
+      "label": "E",
+      "title": "Centers",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc306_c",
+      "directory": {
+        "path": "e",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc308_c",
+      "label": "F",
+      "title": "Standings",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc308_c",
+      "directory": {
+        "path": "f",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc233_d",
+      "label": "G",
+      "title": "Count Interval",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc233_d",
+      "directory": {
+        "path": "g",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc294_e",
+      "label": "H",
+      "title": "2xN Grid",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc294_e",
+      "directory": {
+        "path": "h",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc338_f",
+      "label": "I",
+      "title": "Negative Traveling Salesman",
+      "url": "https://atcoder.jp/contests/adt_all_20260701_2/tasks/abc338_f",
+      "directory": {
+        "path": "i",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    }
+  ]
+}
