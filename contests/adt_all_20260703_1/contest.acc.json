@@ -1,0 +1,108 @@
+{
+  "contest": {
+    "id": "adt_all_20260703_1",
+    "title": "AtCoder Daily Training ALL 2026/07/03 16:00start",
+    "url": "https://atcoder.jp/contests/adt_all_20260703_1"
+  },
+  "tasks": [
+    {
+      "id": "abc457_a",
+      "label": "A",
+      "title": "Array",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc457_a",
+      "directory": {
+        "path": "a",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc298_a",
+      "label": "B",
+      "title": "Job Interview",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc298_a",
+      "directory": {
+        "path": "b",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc369_b",
+      "label": "C",
+      "title": "Piano 3",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc369_b",
+      "directory": {
+        "path": "c",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc294_b",
+      "label": "D",
+      "title": "ASCII Art",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc294_b",
+      "directory": {
+        "path": "d",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc264_c",
+      "label": "E",
+      "title": "Matrix Reducing",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc264_c",
+      "directory": {
+        "path": "e",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc269_c",
+      "label": "F",
+      "title": "Submask",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc269_c",
+      "directory": {
+        "path": "f",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc243_d",
+      "label": "G",
+      "title": "Moves on Binary Tree",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc243_d",
+      "directory": {
+        "path": "g",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc267_e",
+      "label": "H",
+      "title": "Erasing Vertices 2",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc267_e",
+      "directory": {
+        "path": "h",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    },
+    {
+      "id": "abc410_f",
+      "label": "I",
+      "title": "Balanced Rectangles",
+      "url": "https://atcoder.jp/contests/adt_all_20260703_1/tasks/abc410_f",
+      "directory": {
+        "path": "i",
+        "testdir": "test",
+        "submit": "main.cpp"
+      }
+    }
+  ]
+}
