@@ -1,6 +1,6 @@
 //#include <bits/stdc++.h>
 #include <iostream>
-#include <string>
+#include <vector>
 using namespace std;
 using ll = long long;
 
@@ -13,22 +13,26 @@ int main() {
     int N;
     cin >> N;
 
-    string T, A;
-    cin >> T >> A;
+    vector<int> A(N);
+    rep(i, N) cin >> A[i];
+
+    vector<int> B(N);
+    rep(i, N) cin >> B[i];
 
     bool judge = false;
     rep(i, N){
-        if (T[i] == 'o' && A[i] == 'o'){
+        if (i + 1 == B[A[i] - 1])
+            continue;
+        else{
             judge = true;
             break;
         }
     }
-
-    if (judge){
-        cout << "Yes" << "\n";}
-    else{
-        cout << "No" << "\n";}
-
+    
+    if (judge)
+        cout << "No" << "\n";
+    else
+        cout << "Yes" << "\n";
 
     return 0;
 }
