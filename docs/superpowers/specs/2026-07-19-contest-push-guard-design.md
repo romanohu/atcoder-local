@@ -101,7 +101,7 @@ This standard-library-only Python module owns:
 - push decisions at an injected or real current time;
 - CLI commands and user-facing diagnostics.
 
-The network fetch uses HTTPS, a finite timeout, and a descriptive user agent. Contest IDs must match a conservative AtCoder-compatible identifier pattern before being interpolated into a URL.
+The network fetch uses HTTPS, a finite timeout, and a descriptive user agent. Before interpolation into a URL, a contest ID must match `\A[a-z0-9][a-z0-9_-]{0,99}\Z`. This accepts the lowercase alphanumeric, underscore, and hyphen forms used by this repository and official AtCoder contest slugs while rejecting path separators and URL syntax.
 
 The module exposes small functions for parsing, persistence, and decisions so tests do not need to invoke the CLI for every case.
 
@@ -174,12 +174,14 @@ push_guard.py install
 push_guard.py check
 push_guard.py status
 push_guard.py set-end CONTEST_ID "YYYY-MM-DD HH:MM"
+push_guard.py recover-state CONTEST_ID "YYYY-MM-DD HH:MM"
 ```
 
 - `install` configures and verifies the repository-local hook. It exits nonzero without changing an existing different hooks path.
-- `check` prints nothing when pushes are allowed. When blocked, it prints the contest ID, reason, and end time if known, then exits nonzero.
+- `check` prints nothing when pushes are allowed. When blocked by valid state, it prints every active or unresolved record sorted by contest ID, including the reason and end time if known, then exits nonzero. Invalid state produces one state-level diagnostic.
 - `status` shows installation state and every registered contest as upcoming, active, expired, or unresolved. Invalid state produces a diagnostic and nonzero exit.
 - `set-end` accepts JST, requires a future time and an existing unresolved contest ID, then atomically updates that record.
+- `recover-state` accepts a contest ID and future JST end time only when the current state exists but cannot be parsed or validated. It preserves the invalid file as a timestamped sibling backup, then atomically creates a single immediate-start manual record. It refuses to operate on absent or valid state.
 
 There is no ordinary command that removes an active record or shortens an official contest interval.
 
@@ -188,6 +190,7 @@ There is no ordinary command that removes an active record or shortens an offici
 - Network, HTTP, decoding, HTML parsing, and timestamp validation errors all enter the unresolved-record flow.
 - Failure to persist the unresolved record is a hard error. The wrapper must state that protection could not be established and return nonzero.
 - State corruption blocks `check`; recovery must be explicit rather than silently resetting the file.
+- The supported corrupt-state recovery is `push_guard.py recover-state CONTEST_ID "YYYY-MM-DD HH:MM"`. Recovery remains fail-closed: it replaces invalid state with a manual record that blocks immediately until the supplied future end time and retains the invalid source as a backup. A user who intentionally removes or edits Git metadata is outside the protection boundary.
 - Hook installation errors do not mutate an existing hooks configuration.
 - Diagnostics go to standard error when they describe a block or failure.
 - No exception traceback is shown for expected operational errors; the CLI reports concise corrective commands.
@@ -218,6 +221,7 @@ The existing `contests/README.md` only documents contest-local commands and does
 - Upsert duplicate contest IDs without removing other contests.
 - Preserve an unresolved record on invalid manual input or EOF.
 - Accept a valid future JST manual end time and convert it to UTC.
+- Recover corrupt state only through a backup plus an immediate manual lock, and refuse recovery for absent or valid state.
 - Verify atomic state replacement behavior at the function boundary.
 - Verify install idempotency and refusal to overwrite another `core.hooksPath`.
 
@@ -228,7 +232,7 @@ The existing `contests/README.md` only documents contest-local commands and does
 - Register after a successful `acc new`.
 - Do not register after a failed `acc new`.
 - Create an unresolved record before prompting when acquisition fails.
-- Return nonzero only when the guard remains unresolved or cannot be persisted.
+- After a successful underlying `acc` command, return nonzero only when the guard remains unresolved or cannot be persisted. A failing underlying `acc` command continues to return its own nonzero exit code.
 
 All subprocesses, network responses, user input, and current times are injected or mocked.
 
@@ -239,10 +243,9 @@ Use temporary local Git repositories and a local bare remote. Enable the committ
 - a push succeeds with no state;
 - a push is rejected for an active record;
 - a push is rejected for an unresolved or corrupt record;
-- a push succeeds at the exact end time;
 - the same decision applies to a second remote and a non-default branch.
 
-Integration tests use an injected clock supported only for tests; they make no internet connection.
+Integration tests create active and expired intervals relative to the real current time and make no internet connection. Exact start and end boundaries are covered at the decision-function level with an injected `now`; the installed hook and CLI expose no clock override.
 
 ## Acceptance Criteria
 
