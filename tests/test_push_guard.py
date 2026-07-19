@@ -1,20 +1,382 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import BadStatusLine, IncompleteRead
+import json
 import math
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from tools.push_guard import (
+    ContestLock,
     PushGuardError,
+    STATE_VERSION,
+    StateError,
+    blocking_contests,
     contest_url,
     fetch_contest_schedule,
+    load_state,
     parse_contest_schedule,
+    status_for_lock,
+    upsert_lock,
+    write_state,
 )
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class TestGuardDecision(unittest.TestCase):
+    def setUp(self) -> None:
+        self.start = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        self.end = datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc)
+        self.lock = ContestLock("abc467", self.start, self.end)
+
+    def test_contest_lock_is_frozen(self) -> None:
+        with self.assertRaises(AttributeError):
+            self.lock.contest_id = "abc468"
+
+    def test_blocks_closed_open_interval(self) -> None:
+        self.assertEqual(blocking_contests([self.lock], self.start), [self.lock])
+        almost_end = self.end - timedelta(microseconds=1)
+        self.assertEqual(blocking_contests([self.lock], almost_end), [self.lock])
+
+    def test_allows_before_start_and_at_end(self) -> None:
+        before_start = self.start - timedelta(microseconds=1)
+        self.assertEqual(blocking_contests([self.lock], before_start), [])
+        self.assertEqual(blocking_contests([self.lock], self.end), [])
+
+    def test_unresolved_always_blocks(self) -> None:
+        unresolved = ContestLock("abc467", self.start, None)
+
+        long_before_start = self.start - timedelta(days=365)
+        long_after_start = self.start + timedelta(days=365)
+        self.assertEqual(
+            blocking_contests([unresolved], long_before_start),
+            [unresolved],
+        )
+        self.assertEqual(
+            blocking_contests([unresolved], long_after_start),
+            [unresolved],
+        )
+
+    def test_returns_every_blocking_contest_sorted_by_id(self) -> None:
+        locks = [
+            ContestLock("zzz", self.start, None),
+            ContestLock("past", self.start - timedelta(days=2), self.start),
+            ContestLock("aaa", self.start, self.end),
+            ContestLock("future", self.end, self.end + timedelta(hours=1)),
+        ]
+
+        result = blocking_contests(locks, self.start)
+
+        self.assertEqual([lock.contest_id for lock in result], ["aaa", "zzz"])
+
+    def test_reports_all_status_values(self) -> None:
+        now = self.start
+        cases = {
+            "upcoming": ContestLock("upcoming", now + timedelta(seconds=1), self.end),
+            "active": ContestLock("active", now, self.end),
+            "expired": ContestLock("expired", now - timedelta(hours=1), now),
+            "unresolved": ContestLock("unresolved", now + timedelta(days=1), None),
+        }
+
+        for expected, lock in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(status_for_lock(lock, now), expected)
+
+
+class TestStatePersistence(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.directory = Path(temporary_directory.name)
+        self.path = self.directory / "atcoder-push-lock.json"
+        self.start = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        self.end = datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc)
+
+    def test_missing_state_file_returns_empty_list(self) -> None:
+        self.assertEqual(load_state(self.path), [])
+
+    def test_round_trip_is_sorted_canonical_readable_and_unresolved(self) -> None:
+        jst = timezone(timedelta(hours=9))
+        locks = [
+            ContestLock(
+                "zzz",
+                datetime(2026, 7, 18, 21, 0, tzinfo=jst),
+                None,
+            ),
+            ContestLock("abc467", self.start, self.end),
+        ]
+
+        write_state(self.path, locks)
+
+        raw = self.path.read_text(encoding="utf-8")
+        self.assertTrue(raw.endswith("\n"))
+        self.assertIn('\n  "version": 1,\n', raw)
+        self.assertIn('\n  "contests": [\n', raw)
+        self.assertEqual(
+            json.loads(raw),
+            {
+                "version": STATE_VERSION,
+                "contests": [
+                    {
+                        "contest_id": "abc467",
+                        "start_at": "2026-07-18T12:00:00Z",
+                        "end_at": "2026-07-18T13:40:00Z",
+                    },
+                    {
+                        "contest_id": "zzz",
+                        "start_at": "2026-07-18T12:00:00Z",
+                        "end_at": None,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock("abc467", self.start, self.end),
+                ContestLock("zzz", self.start, None),
+            ],
+        )
+
+    def test_rejects_malformed_json(self) -> None:
+        self.path.write_text("{not-json", encoding="utf-8")
+
+        with self.assertRaises(StateError):
+            load_state(self.path)
+
+    def test_rejects_unknown_version_and_wrong_top_level_types(self) -> None:
+        cases = {
+            "top-level list": [],
+            "string version": {"version": "1", "contests": []},
+            "boolean version": {"version": True, "contests": []},
+            "unknown version": {"version": 2, "contests": []},
+            "object contests": {"version": 1, "contests": {}},
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name):
+                self._write_json(value)
+                with self.assertRaises(StateError):
+                    load_state(self.path)
+
+    def test_requires_exact_top_level_and_record_keys(self) -> None:
+        valid_record = self._record()
+        cases = {
+            "missing top-level key": {"version": 1},
+            "extra top-level key": {
+                "version": 1,
+                "contests": [],
+                "extra": None,
+            },
+            "record is not an object": {"version": 1, "contests": [None]},
+            "missing record key": {
+                "version": 1,
+                "contests": [
+                    {"contest_id": "abc467", "start_at": valid_record["start_at"]}
+                ],
+            },
+            "extra record key": {
+                "version": 1,
+                "contests": [{**valid_record, "extra": None}],
+            },
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name):
+                self._write_json(value)
+                with self.assertRaises(StateError):
+                    load_state(self.path)
+
+    def test_rejects_invalid_record_field_types_and_contest_ids(self) -> None:
+        cases = {
+            "integer contest ID": self._record(contest_id=123),
+            "invalid contest ID": self._record(contest_id="../abc467"),
+            "integer start": self._record(start_at=123),
+            "integer end": self._record(end_at=123),
+            "boolean end": self._record(end_at=False),
+        }
+        for name, record in cases.items():
+            with self.subTest(name=name):
+                self._write_json({"version": 1, "contests": [record]})
+                with self.assertRaises(StateError):
+                    load_state(self.path)
+
+    def test_rejects_noncanonical_naive_and_offset_timestamps(self) -> None:
+        cases = {
+            "space separator": "2026-07-18 12:00:00Z",
+            "naive": "2026-07-18T12:00:00",
+            "offset": "2026-07-18T12:00:00+00:00",
+            "fractional": "2026-07-18T12:00:00.000000Z",
+            "not zero padded": "2026-7-18T12:00:00Z",
+            "invalid calendar date": "2026-02-30T12:00:00Z",
+        }
+        for name, start_at in cases.items():
+            with self.subTest(name=name):
+                record = self._record(start_at=start_at)
+                self._write_json({"version": 1, "contests": [record]})
+                with self.assertRaises(StateError):
+                    load_state(self.path)
+
+    def test_rejects_duplicate_contest_ids(self) -> None:
+        record = self._record()
+        self._write_json({"version": 1, "contests": [record, record]})
+
+        with self.assertRaises(StateError):
+            load_state(self.path)
+
+    def test_rejects_nonincreasing_intervals(self) -> None:
+        cases = {
+            "equal": "2026-07-18T12:00:00Z",
+            "reversed": "2026-07-18T11:59:59Z",
+        }
+        for name, end_at in cases.items():
+            with self.subTest(name=name):
+                record = self._record(end_at=end_at)
+                self._write_json({"version": 1, "contests": [record]})
+                with self.assertRaises(StateError):
+                    load_state(self.path)
+
+    def test_wraps_nonabsence_read_and_unicode_decode_errors(self) -> None:
+        errors = {
+            "read": PermissionError("permission denied"),
+            "decode": UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "invalid start byte"
+            ),
+        }
+        for name, error in errors.items():
+            with self.subTest(name=name):
+                with patch.object(Path, "read_text", side_effect=error):
+                    with self.assertRaises(StateError) as raised:
+                        load_state(self.path)
+                self.assertIs(raised.exception.__cause__, error)
+
+    def test_validates_every_outgoing_lock_before_replacing_state(self) -> None:
+        original = ContestLock("abc467", self.start, self.end)
+        write_state(self.path, [original])
+        original_contents = self.path.read_bytes()
+        cases = {
+            "wrong lock type": object(),
+            "invalid ID": ContestLock("../abc467", self.start, self.end),
+            "naive start": ContestLock(
+                "abc467", self.start.replace(tzinfo=None), self.end
+            ),
+            "fractional start": ContestLock(
+                "abc467", self.start + timedelta(microseconds=1), self.end
+            ),
+            "equal interval": ContestLock("abc467", self.start, self.start),
+        }
+        for name, lock in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(StateError):
+                    write_state(self.path, [lock])
+                self.assertEqual(self.path.read_bytes(), original_contents)
+
+    def test_rejects_duplicate_outgoing_ids_before_replacing_state(self) -> None:
+        original = ContestLock("abc467", self.start, self.end)
+        write_state(self.path, [original])
+        original_contents = self.path.read_bytes()
+
+        with self.assertRaises(StateError):
+            write_state(self.path, [original, original])
+
+        self.assertEqual(self.path.read_bytes(), original_contents)
+
+    def test_upsert_replaces_same_id_preserves_others_and_sorts(self) -> None:
+        write_state(
+            self.path,
+            [
+                ContestLock("zzz", self.start, None),
+                ContestLock("abc467", self.start, self.end),
+            ],
+        )
+        replacement_end = self.end + timedelta(hours=1)
+
+        upsert_lock(
+            self.path,
+            ContestLock("abc467", self.start, replacement_end),
+        )
+
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock("abc467", self.start, replacement_end),
+                ContestLock("zzz", self.start, None),
+            ],
+        )
+
+    def test_upsert_does_not_overwrite_invalid_existing_state(self) -> None:
+        original_contents = b"{not-json\n"
+        self.path.write_bytes(original_contents)
+
+        with self.assertRaises(StateError):
+            upsert_lock(self.path, ContestLock("abc467", self.start, self.end))
+
+        self.assertEqual(self.path.read_bytes(), original_contents)
+
+    def test_upsert_rejects_invalid_new_lock_without_replacing_state(self) -> None:
+        original = ContestLock("abc467", self.start, self.end)
+        write_state(self.path, [original])
+        original_contents = self.path.read_bytes()
+
+        with self.assertRaises(StateError):
+            upsert_lock(self.path, object())
+
+        self.assertEqual(self.path.read_bytes(), original_contents)
+
+    def test_write_uses_fsync_and_same_directory_atomic_replace(self) -> None:
+        real_replace = os.replace
+        replace_calls: list[tuple[Path, Path]] = []
+
+        def observing_replace(source: str, destination: Path) -> None:
+            source_path = Path(source)
+            destination_path = Path(destination)
+            self.assertEqual(source_path.parent, self.path.parent)
+            self.assertEqual(destination_path, self.path)
+            replace_calls.append((source_path, destination_path))
+            real_replace(source, destination)
+
+        with patch("tools.push_guard.os.fsync", wraps=os.fsync) as fsync:
+            with patch(
+                "tools.push_guard.os.replace", side_effect=observing_replace
+            ):
+                write_state(
+                    self.path,
+                    [ContestLock("abc467", self.start, self.end)],
+                )
+
+        fsync.assert_called_once()
+        self.assertEqual(len(replace_calls), 1)
+        self.assertEqual(load_state(self.path)[0].contest_id, "abc467")
+
+    def test_write_cleans_unconsumed_temporary_file(self) -> None:
+        original_contents = b"existing\n"
+        self.path.write_bytes(original_contents)
+
+        with patch("tools.push_guard.os.replace", side_effect=OSError("busy")):
+            with self.assertRaises(StateError):
+                write_state(
+                    self.path,
+                    [ContestLock("abc467", self.start, self.end)],
+                )
+
+        self.assertEqual(self.path.read_bytes(), original_contents)
+        self.assertEqual(list(self.directory.iterdir()), [self.path])
+
+    def _write_json(self, value: object) -> None:
+        self.path.write_text(json.dumps(value), encoding="utf-8")
+
+    @staticmethod
+    def _record(**overrides: object) -> dict[str, object]:
+        record: dict[str, object] = {
+            "contest_id": "abc467",
+            "start_at": "2026-07-18T12:00:00Z",
+            "end_at": "2026-07-18T13:40:00Z",
+        }
+        record.update(overrides)
+        return record
 
 
 class TestScheduleParsing(unittest.TestCase):
