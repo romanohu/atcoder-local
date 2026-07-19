@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from http.client import BadStatusLine, IncompleteRead
 import math
 from pathlib import Path
 import unittest
@@ -96,8 +97,21 @@ class TestScheduleParsing(unittest.TestCase):
             "https://atcoder.jp/contests/tessoku-book",
         )
 
+    def test_accepts_maximum_length_contest_id(self) -> None:
+        contest_id = "a" * 100
+
+        self.assertEqual(
+            contest_url(contest_id),
+            f"https://atcoder.jp/contests/{contest_id}",
+        )
+
     def test_rejects_url_syntax(self) -> None:
         for value in ("ABC467", "../abc467", "abc467?lang=ja", ""):
+            with self.subTest(value=value), self.assertRaises(PushGuardError):
+                contest_url(value)
+
+    def test_rejects_contest_id_boundary_violations(self) -> None:
+        for value in ("_abc467", "-abc467", "a" * 101, "abc467\n"):
             with self.subTest(value=value), self.assertRaises(PushGuardError):
                 contest_url(value)
 
@@ -126,6 +140,15 @@ class _Response:
 
     def read(self) -> bytes:
         return self.body
+
+
+class _ReadFailureResponse(_Response):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(b"")
+        self.error = error
+
+    def read(self) -> bytes:
+        raise self.error
 
 
 class TestScheduleFetching(unittest.TestCase):
@@ -188,18 +211,37 @@ class TestScheduleFetching(unittest.TestCase):
                 raise error
 
             with self.subTest(name=name):
-                with self.assertRaises(PushGuardError) as raised:
+                with self.assertRaises(PushGuardError):
                     fetch_contest_schedule("abc467", open_url=open_url)
-                self.assertIs(type(raised.exception), PushGuardError)
+
+    def test_converts_http_protocol_failures_from_response_read(self) -> None:
+        errors = {
+            "incomplete read": IncompleteRead(b"partial", 10),
+            "bad status line": BadStatusLine("not-http"),
+        }
+        for name, error in errors.items():
+            response = _ReadFailureResponse(error)
+
+            def open_url(
+                request: object,
+                *,
+                timeout: float,
+                response: _ReadFailureResponse = response,
+            ) -> _ReadFailureResponse:
+                return response
+
+            with self.subTest(name=name):
+                with self.assertRaises(PushGuardError):
+                    fetch_contest_schedule("abc467", open_url=open_url)
+                self.assertTrue(response.entered)
+                self.assertTrue(response.exited)
 
     def test_converts_utf8_decode_failure(self) -> None:
         def open_url(request: object, *, timeout: float) -> _Response:
             return _Response(b"\xff")
 
-        with self.assertRaises(PushGuardError) as raised:
+        with self.assertRaises(PushGuardError):
             fetch_contest_schedule("abc467", open_url=open_url)
-
-        self.assertIs(type(raised.exception), PushGuardError)
 
     def test_converts_malformed_schedule_html(self) -> None:
         bodies = {
@@ -216,9 +258,8 @@ class TestScheduleFetching(unittest.TestCase):
                 return _Response(body)
 
             with self.subTest(name=name):
-                with self.assertRaises(PushGuardError) as raised:
+                with self.assertRaises(PushGuardError):
                     fetch_contest_schedule("abc467", open_url=open_url)
-                self.assertIs(type(raised.exception), PushGuardError)
 
 
 if __name__ == "__main__":

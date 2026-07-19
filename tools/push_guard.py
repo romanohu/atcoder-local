@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from http.client import HTTPException
 import re
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -94,7 +95,7 @@ def fetch_contest_schedule(
         with open_url(request, timeout=timeout) as response:
             body = response.read()
         html = body.decode("utf-8")
-    except (HTTPError, OSError, UnicodeError) as exc:
+    except (HTTPError, HTTPException, OSError, UnicodeError) as exc:
         raise PushGuardError(f"failed to fetch AtCoder contest schedule: {exc}") from exc
 
     return parse_contest_schedule(html)
