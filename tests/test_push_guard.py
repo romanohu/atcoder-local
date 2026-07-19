@@ -602,6 +602,7 @@ class TestContestRegistration(unittest.TestCase):
 
     def test_fetch_failure_persists_unresolved_before_prompt_then_resolves(self) -> None:
         prompt_calls = 0
+        now_calls: list[datetime] = []
 
         def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
             raise PushGuardError("schedule unavailable")
@@ -617,16 +618,21 @@ class TestContestRegistration(unittest.TestCase):
             self.assertIn("YYYY-MM-DD HH:MM", prompt)
             return "2026-07-18 22:40"
 
+        def current_time() -> datetime:
+            now_calls.append(self.now)
+            return self.now
+
         push_guard.register_contest(
             "abc467",
             self.path,
             fetch_schedule=fail_fetch,
             input_value=input_value,
             is_interactive=True,
-            now=lambda: self.now,
+            now=current_time,
         )
 
         self.assertEqual(prompt_calls, 1)
+        self.assertEqual(now_calls, [self.now, self.now])
         self.assertEqual(
             load_state(self.path),
             [
@@ -637,6 +643,32 @@ class TestContestRegistration(unittest.TestCase):
                 )
             ],
         )
+
+    def test_manual_end_is_rejected_if_it_expires_while_prompting(self) -> None:
+        failure_time = self.now
+        post_input_time = self.now + timedelta(minutes=30)
+        times = iter((failure_time, post_input_time))
+
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise PushGuardError("schedule unavailable")
+
+        with self.assertRaises(PushGuardError) as raised:
+            push_guard.register_contest(
+                "abc467",
+                self.path,
+                fetch_schedule=fail_fetch,
+                input_value=lambda prompt: "2026-07-18 21:30",
+                is_interactive=True,
+                now=lambda: next(times),
+            )
+
+        self.assertIn("manual end time must be in the future", str(raised.exception))
+        self.assertEqual(
+            load_state(self.path),
+            [ContestLock("abc467", failure_time, None)],
+        )
+        with self.assertRaises(StopIteration):
+            next(times)
 
     def test_invalid_input_eof_and_interrupt_preserve_unresolved_state(self) -> None:
         cases = {
@@ -671,11 +703,17 @@ class TestContestRegistration(unittest.TestCase):
                 )
 
     def test_noninteractive_failure_does_not_prompt_and_stays_unresolved(self) -> None:
+        now_calls: list[datetime] = []
+
         def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
             raise PushGuardError("schedule unavailable")
 
         def input_value(prompt: str) -> str:
             self.fail("noninteractive registration must not prompt")
+
+        def current_time() -> datetime:
+            now_calls.append(self.now)
+            return self.now
 
         with self.assertRaises(PushGuardError):
             push_guard.register_contest(
@@ -684,9 +722,36 @@ class TestContestRegistration(unittest.TestCase):
                 fetch_schedule=fail_fetch,
                 input_value=input_value,
                 is_interactive=False,
+                now=current_time,
+            )
+
+        self.assertEqual(now_calls, [self.now])
+        self.assertEqual(
+            load_state(self.path),
+            [ContestLock("abc467", self.now, None)],
+        )
+
+    def test_fetch_interrupt_persists_unresolved_without_prompting(self) -> None:
+        interrupt = KeyboardInterrupt("fetch interrupted")
+
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise interrupt
+
+        def input_value(prompt: str) -> str:
+            self.fail("fetch interruption must not prompt")
+
+        with self.assertRaises(BaseException) as raised:
+            push_guard.register_contest(
+                "abc467",
+                self.path,
+                fetch_schedule=fail_fetch,
+                input_value=input_value,
+                is_interactive=True,
                 now=lambda: self.now,
             )
 
+        self.assertIsInstance(raised.exception, PushGuardError)
+        self.assertIs(raised.exception.__cause__, interrupt)
         self.assertEqual(
             load_state(self.path),
             [ContestLock("abc467", self.now, None)],

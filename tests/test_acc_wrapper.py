@@ -200,6 +200,97 @@ class TestAccWrapperMain(unittest.TestCase):
             ],
         )
 
+    def test_memo_interrupt_registers_before_reraising_same_interrupt(self) -> None:
+        events: list[object] = []
+        interrupt = KeyboardInterrupt("memo interrupted")
+        cwd = Path("/repo")
+        state_path = Path("/repo/state.json")
+
+        def create_memo(args: list[str], actual_cwd: Path) -> None:
+            events.append(("memo", args, actual_cwd))
+            raise interrupt
+
+        operations = SimpleNamespace(
+            preflight_guard=lambda actual_cwd: events.append(
+                ("preflight", actual_cwd)
+            )
+            or state_path,
+            create_memo=create_memo,
+            register_contest=lambda contest_id, actual_state_path: events.append(
+                ("register", contest_id, actual_state_path)
+            ),
+        )
+
+        with self.assertRaises(KeyboardInterrupt) as raised:
+            main(
+                ["new", "abc454"],
+                cwd=cwd,
+                acc_runner=lambda args: events.append(("acc", args)) or 0,
+                operations=operations,
+            )
+
+        self.assertIs(raised.exception, interrupt)
+        self.assertEqual(
+            events,
+            [
+                ("preflight", cwd),
+                ("acc", ["new", "abc454"]),
+                ("memo", ["new", "abc454"], cwd),
+                ("register", "abc454", state_path),
+            ],
+        )
+
+    def test_memo_interrupt_defers_to_expected_registration_error(self) -> None:
+        events: list[object] = []
+        interrupt = KeyboardInterrupt("memo interrupted")
+        cwd = Path("/repo")
+        state_path = Path("/repo/state.json")
+        stderr = StringIO()
+
+        def create_memo(args: list[str], actual_cwd: Path) -> None:
+            events.append(("memo", args, actual_cwd))
+            raise interrupt
+
+        def fail_registration(contest_id: str, actual_state_path: Path) -> None:
+            events.append(("register", contest_id, actual_state_path))
+            raise PushGuardError("end time is unresolved")
+
+        operations = SimpleNamespace(
+            preflight_guard=lambda actual_cwd: events.append(
+                ("preflight", actual_cwd)
+            )
+            or state_path,
+            create_memo=create_memo,
+            register_contest=fail_registration,
+        )
+
+        with redirect_stderr(stderr):
+            try:
+                result = main(
+                    ["new", "abc454"],
+                    cwd=cwd,
+                    acc_runner=lambda args: events.append(("acc", args)) or 0,
+                    operations=operations,
+                )
+            except KeyboardInterrupt:
+                self.fail("memo interruption bypassed contest registration")
+
+        self.assertEqual(result, 1)
+        self.assertEqual(
+            events,
+            [
+                ("preflight", cwd),
+                ("acc", ["new", "abc454"]),
+                ("memo", ["new", "abc454"], cwd),
+                ("register", "abc454", state_path),
+            ],
+        )
+        self.assertEqual(
+            stderr.getvalue(),
+            "[acc-wrapper] failed to register contest abc454: "
+            "end time is unresolved\n",
+        )
+
     def test_preflight_error_reports_install_command_without_calling_acc(self) -> None:
         acc_calls: list[list[str]] = []
         stderr = StringIO()

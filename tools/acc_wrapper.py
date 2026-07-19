@@ -224,11 +224,14 @@ def main(
     if returncode != 0:
         return returncode
 
+    memo_interrupt: KeyboardInterrupt | None = None
     if args and args[0] in COMMANDS_FOR_NEW:
         try:
             if contest_id is not None:
                 assert active_operations is not None
                 active_operations.create_memo(args, working_directory)
+        except KeyboardInterrupt as exc:
+            memo_interrupt = exc
         except Exception as exc:
             print(f"[acc-wrapper] failed to create memo.md: {exc}", file=sys.stderr)
     if contest_id is not None:
@@ -242,6 +245,8 @@ def main(
                 file=sys.stderr,
             )
             return 1
+    if memo_interrupt is not None:
+        raise memo_interrupt
     return returncode
 
 

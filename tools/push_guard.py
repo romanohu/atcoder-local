@@ -326,9 +326,15 @@ def register_contest(
 ) -> None:
     try:
         start_at, end_at = fetch_schedule(contest_id)
-    except PushGuardError as acquisition_error:
+    except (PushGuardError, KeyboardInterrupt) as acquisition_error:
         failure_time = now()
         upsert_lock(state_path, ContestLock(contest_id, failure_time, None))
+
+        if isinstance(acquisition_error, KeyboardInterrupt):
+            raise PushGuardError(
+                f"schedule acquisition interrupted for {contest_id}; "
+                "end time is unresolved"
+            ) from acquisition_error
 
         if not is_interactive:
             raise PushGuardError(
@@ -345,7 +351,7 @@ def register_contest(
             ) from exc
 
         try:
-            set_manual_end(state_path, contest_id, end_value, failure_time)
+            set_manual_end(state_path, contest_id, end_value, now())
         except StateError:
             raise
         except PushGuardError as exc:
