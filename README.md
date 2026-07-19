@@ -64,6 +64,8 @@ uv run python tools/push_guard.py set-end abc467 "2026-07-18 22:40"
 uv run python tools/push_guard.py recover-state abc467 "2026-07-18 22:40"
 ```
 
+`status` は、フックがインストール済みかどうかと、登録した各コンテストの状態（`upcoming`、`active`、`expired`、`unresolved`）を表示します。
+
 `set-end` は、登録済みで終了時刻が未解決のコンテストにだけ使えます。指定する時刻は未来のJSTです。
 
 `recover-state` は、状態ファイルが壊れて読み込めない場合にだけ使えます。状態ファイルが壊れている間もpushは止まります。復旧時は壊れたファイルを時刻付きの別ファイルへバックアップしてから、現在時刻から指定した終了時刻まで有効なロックで置き換えます。
