@@ -43,6 +43,10 @@ class _FailingTimezone(tzinfo):
         raise self.error
 
 
+class _RawCopyFailure(BaseException):
+    pass
+
+
 class TestGuardDecision(unittest.TestCase):
     def setUp(self) -> None:
         self.start = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
@@ -797,6 +801,66 @@ class TestRepositoryPaths(unittest.TestCase):
             with self.assertRaises(PushGuardError):
                 push_guard.state_path_for_repository(self.root)
 
+    def test_git_helpers_wrap_text_decode_failures(self) -> None:
+        operations = {
+            "repository root": lambda: push_guard.repository_root(self.root),
+            "state path": lambda: push_guard.state_path_for_repository(self.root),
+            "hook inspection": lambda: push_guard.guard_is_installed(self.root),
+        }
+        for name, operation in operations.items():
+            decode_error = UnicodeDecodeError(
+                "utf-8",
+                b"\xff",
+                0,
+                1,
+                "invalid start byte",
+            )
+            with self.subTest(name=name):
+                with patch(
+                    "tools.push_guard.subprocess.run",
+                    side_effect=decode_error,
+                ):
+                    with self.assertRaises(PushGuardError) as raised:
+                        operation()
+                self.assertIs(raised.exception.__cause__, decode_error)
+
+    def test_git_helpers_wrap_path_resolution_runtime_errors(self) -> None:
+        operations = {
+            "repository root": (
+                f"{self.root}\n",
+                lambda: push_guard.repository_root(self.root),
+            ),
+            "state path": (
+                ".git/atcoder-push-lock.json\n",
+                lambda: push_guard.state_path_for_repository(self.root),
+            ),
+            "hook inspection": (
+                ".githooks\n",
+                lambda: push_guard.guard_is_installed(self.root),
+            ),
+        }
+        for name, (stdout, operation) in operations.items():
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=stdout,
+                stderr="",
+            )
+            resolution_error = RuntimeError("symlink loop")
+            with self.subTest(name=name):
+                with patch(
+                    "tools.push_guard.subprocess.run",
+                    return_value=completed,
+                ):
+                    with patch.object(
+                        Path,
+                        "resolve",
+                        side_effect=resolution_error,
+                    ):
+                        with self.assertRaises(PushGuardError) as raised:
+                            operation()
+                self.assertIs(raised.exception.__cause__, resolution_error)
+
     def test_guard_installation_check_is_read_only_and_requires_executable_hook(
         self,
     ) -> None:
@@ -1195,6 +1259,86 @@ class TestStateRecovery(unittest.TestCase):
         self.assertIs(raised.exception.__cause__, copy_error)
         self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
         self.assertEqual(list(self.root.iterdir()), [self.path])
+
+    def test_keyboard_interrupt_during_copy_deletes_backup_and_propagates(
+        self,
+    ) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        interrupt = KeyboardInterrupt()
+
+        with patch("tools.push_guard.shutil.copy2", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                push_guard.recover_state(
+                    self.path,
+                    "abc467",
+                    self.manual_end,
+                    self.now,
+                )
+
+        self.assertIs(raised.exception, interrupt)
+        self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
+
+    def test_copy_and_cleanup_failures_report_incomplete_backup(self) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        copy_error = OSError("copy failed")
+        cleanup_error = OSError("cleanup failed")
+
+        with patch("tools.push_guard.shutil.copy2", side_effect=copy_error):
+            with patch.object(
+                Path,
+                "unlink",
+                side_effect=cleanup_error,
+            ) as unlink:
+                with self.assertRaises(StateError) as raised:
+                    push_guard.recover_state(
+                        self.path,
+                        "abc467",
+                        self.manual_end,
+                        self.now,
+                    )
+
+        unlink.assert_called_once()
+        self.assertIs(raised.exception.__cause__, copy_error)
+        backups = list(self.root.glob("atcoder-push-lock.corrupt-*.json"))
+        self.assertEqual(len(backups), 1)
+        message = str(raised.exception)
+        self.assertIn("copy failed", message)
+        self.assertIn(str(backups[0]), message)
+        self.assertIn("cleanup failed", message)
+        self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+
+    def test_raw_copy_failure_preserves_instance_and_chains_cleanup_context(
+        self,
+    ) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        copy_error = _RawCopyFailure("raw copy failure")
+        cleanup_error = OSError("cleanup failed")
+
+        with patch("tools.push_guard.shutil.copy2", side_effect=copy_error):
+            with patch.object(
+                Path,
+                "unlink",
+                side_effect=cleanup_error,
+            ) as unlink:
+                with self.assertRaises(_RawCopyFailure) as raised:
+                    push_guard.recover_state(
+                        self.path,
+                        "abc467",
+                        self.manual_end,
+                        self.now,
+                    )
+
+        unlink.assert_called_once()
+        self.assertIs(raised.exception, copy_error)
+        cleanup_context = raised.exception.__cause__
+        self.assertIsInstance(cleanup_context, StateError)
+        backups = list(self.root.glob("atcoder-push-lock.corrupt-*.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn(str(backups[0]), str(cleanup_context))
+        self.assertIn("cleanup failed", str(cleanup_context))
+        self.assertIs(cleanup_context.__cause__, cleanup_error)
+        self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
 
     def test_write_failure_preserves_original_and_completed_backup(self) -> None:
         self.path.write_bytes(self.corrupt_contents)

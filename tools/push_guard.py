@@ -366,7 +366,7 @@ def _git_rev_parse(cwd: Path, arguments: Sequence[str]) -> str:
             capture_output=True,
             text=True,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, UnicodeError, subprocess.CalledProcessError) as exc:
         detail = str(exc)
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             detail = exc.stderr.strip() or detail
@@ -378,15 +378,25 @@ def _git_rev_parse(cwd: Path, arguments: Sequence[str]) -> str:
     return value
 
 
+def _resolve_path(path: Path, description: str) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PushGuardError(f"failed to resolve {description}: {exc}") from exc
+
+
 def repository_root(cwd: Path) -> Path:
-    return Path(_git_rev_parse(cwd, ["--show-toplevel"])).resolve()
+    return _resolve_path(
+        Path(_git_rev_parse(cwd, ["--show-toplevel"])),
+        "repository root",
+    )
 
 
 def state_path_for_repository(root: Path) -> Path:
     raw_path = Path(_git_rev_parse(root, ["--git-path", STATE_FILENAME]))
     if not raw_path.is_absolute():
         raw_path = root / raw_path
-    return raw_path.resolve()
+    return _resolve_path(raw_path, "push-guard state path")
 
 
 def guard_is_installed(root: Path) -> bool:
@@ -398,7 +408,7 @@ def guard_is_installed(root: Path) -> bool:
             capture_output=True,
             text=True,
         )
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise PushGuardError(f"failed to inspect Git hook configuration: {exc}") from exc
 
     if result.returncode == 1:
@@ -412,14 +422,21 @@ def guard_is_installed(root: Path) -> bool:
     configured_value = result.stdout.strip()
     if not configured_value:
         return False
-    configured_path = Path(configured_value).expanduser()
+    try:
+        configured_path = Path(configured_value).expanduser()
+    except (OSError, RuntimeError) as exc:
+        raise PushGuardError(f"failed to resolve Git hook path: {exc}") from exc
     if not configured_path.is_absolute():
         configured_path = root / configured_path
 
-    expected_hooks_path = (root / HOOKS_PATH_VALUE).resolve()
+    expected_hooks_path = _resolve_path(root / HOOKS_PATH_VALUE, "Git hook path")
+    configured_hooks_path = _resolve_path(
+        configured_path,
+        "configured Git hook path",
+    )
     expected_hook = expected_hooks_path / "pre-push"
     return (
-        configured_path.resolve() == expected_hooks_path
+        configured_hooks_path == expected_hooks_path
         and expected_hook.is_file()
         and os.access(expected_hook, os.X_OK)
     )
@@ -427,6 +444,50 @@ def guard_is_installed(root: Path) -> bool:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _copy_corrupt_state_backup(path: Path, timestamp: str) -> Path:
+    backup_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f"atcoder-push-lock.corrupt-{timestamp}-",
+            suffix=".json",
+            delete=False,
+        ) as backup_file:
+            backup_path = Path(backup_file.name)
+    except OSError as exc:
+        raise StateError(f"failed to reserve corrupt-state backup: {exc}") from exc
+
+    try:
+        shutil.copy2(path, backup_path)
+    except BaseException as copy_error:
+        try:
+            backup_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_error:
+            cleanup_message = (
+                "failed to delete incomplete corrupt-state backup at "
+                f"{backup_path}: {cleanup_error}"
+            )
+            if isinstance(copy_error, OSError):
+                raise StateError(
+                    "failed to back up corrupt push-guard state: "
+                    f"{copy_error}; {cleanup_message}"
+                ) from copy_error
+            cleanup_context = StateError(cleanup_message)
+            cleanup_context.__cause__ = cleanup_error
+            raise copy_error from cleanup_context
+
+        if isinstance(copy_error, OSError):
+            raise StateError(
+                f"failed to back up corrupt push-guard state: {copy_error}"
+            ) from copy_error
+        raise
+
+    return backup_path
 
 
 def recover_state(
@@ -453,27 +514,7 @@ def recover_state(
         raise PushGuardError("push-guard state is valid; recovery is refused")
 
     timestamp = start_at.strftime("%Y%m%dT%H%M%SZ")
-    backup_path: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f"atcoder-push-lock.corrupt-{timestamp}-",
-            suffix=".json",
-            delete=False,
-        ) as backup_file:
-            backup_path = Path(backup_file.name)
-    except OSError as exc:
-        raise StateError(f"failed to reserve corrupt-state backup: {exc}") from exc
-
-    try:
-        shutil.copy2(path, backup_path)
-    except OSError as exc:
-        try:
-            backup_path.unlink()
-        except (FileNotFoundError, OSError):
-            pass
-        raise StateError(f"failed to back up corrupt push-guard state: {exc}") from exc
+    _copy_corrupt_state_backup(path, timestamp)
 
     write_state(path, [ContestLock(contest_id, start_at, end_at)])
 
