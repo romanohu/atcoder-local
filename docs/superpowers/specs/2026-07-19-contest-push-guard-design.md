@@ -181,7 +181,7 @@ push_guard.py recover-state CONTEST_ID "YYYY-MM-DD HH:MM"
 - `check` prints nothing when pushes are allowed. When blocked by valid state, it prints every active or unresolved record sorted by contest ID, including the reason and end time if known, then exits nonzero. Invalid state produces one state-level diagnostic.
 - `status` shows installation state and every registered contest as upcoming, active, expired, or unresolved. Invalid state produces a diagnostic and nonzero exit.
 - `set-end` accepts JST, requires a future time and an existing unresolved contest ID, then atomically updates that record.
-- `recover-state` accepts a contest ID and future JST end time only when the current state exists but cannot be parsed or validated. It preserves the invalid file as a timestamped sibling backup, then atomically creates a single immediate-start manual record. It refuses to operate on absent or valid state.
+- `recover-state` accepts a contest ID and future JST end time only when the current state exists but cannot be parsed or validated. It first copies the invalid file to a timestamped sibling backup, then atomically replaces the original with a single immediate-start manual record. The original path must remain present throughout recovery so there is no transient allow window. The command refuses to operate on absent or valid state.
 
 There is no ordinary command that removes an active record or shortens an official contest interval.
 
