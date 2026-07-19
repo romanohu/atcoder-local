@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from http.client import BadStatusLine, IncompleteRead
 import json
 import math
@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
+from zoneinfo import ZoneInfo
 
 from tools.push_guard import (
     ContestLock,
@@ -26,6 +27,14 @@ from tools.push_guard import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class _FailingTimezone(tzinfo):
+    def __init__(self, error: ValueError | OverflowError) -> None:
+        self.error = error
+
+    def utcoffset(self, value: datetime | None) -> timedelta | None:
+        raise self.error
 
 
 class TestGuardDecision(unittest.TestCase):
@@ -86,6 +95,28 @@ class TestGuardDecision(unittest.TestCase):
         for expected, lock in cases.items():
             with self.subTest(expected=expected):
                 self.assertEqual(status_for_lock(lock, now), expected)
+
+    def test_status_uses_utc_timeline_across_fallback_fold(self) -> None:
+        zone = ZoneInfo("America/New_York")
+        lock = ContestLock(
+            "fallback",
+            datetime(2025, 11, 2, 1, 30, tzinfo=zone, fold=0),
+            datetime(2025, 11, 2, 1, 30, tzinfo=zone, fold=1),
+        )
+        now = datetime(2025, 11, 2, 1, 15, tzinfo=zone, fold=1)
+
+        self.assertEqual(status_for_lock(lock, now), "active")
+
+    def test_blocking_uses_utc_timeline_across_fallback_fold(self) -> None:
+        zone = ZoneInfo("America/New_York")
+        lock = ContestLock(
+            "fallback",
+            datetime(2025, 11, 2, 1, 30, tzinfo=zone, fold=0),
+            datetime(2025, 11, 2, 1, 30, tzinfo=zone, fold=1),
+        )
+        now = datetime(2025, 11, 2, 1, 15, tzinfo=zone, fold=1)
+
+        self.assertEqual(blocking_contests([lock], now), [lock])
 
 
 class TestStatePersistence(unittest.TestCase):
@@ -148,6 +179,23 @@ class TestStatePersistence(unittest.TestCase):
 
         with self.assertRaises(StateError):
             load_state(self.path)
+
+    def test_wraps_excessive_json_nesting(self) -> None:
+        self.path.write_text("[" * 1100 + "]" * 1100, encoding="utf-8")
+
+        with self.assertRaises(StateError) as raised:
+            load_state(self.path)
+
+        self.assertIsInstance(raised.exception.__cause__, RecursionError)
+
+    def test_wraps_oversized_json_integer(self) -> None:
+        raw = '{"version":' + "9" * 5000 + ',"contests":[]}'
+        self.path.write_text(raw, encoding="utf-8")
+
+        with self.assertRaises(StateError) as raised:
+            load_state(self.path)
+
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
 
     def test_rejects_unknown_version_and_wrong_top_level_types(self) -> None:
         cases = {
@@ -238,6 +286,43 @@ class TestStatePersistence(unittest.TestCase):
                 self._write_json({"version": 1, "contests": [record]})
                 with self.assertRaises(StateError):
                     load_state(self.path)
+
+    def test_rejects_outgoing_interval_reversed_in_utc_across_fallback_fold(
+        self,
+    ) -> None:
+        zone = ZoneInfo("America/New_York")
+        lock = ContestLock(
+            "fallback",
+            datetime(2025, 11, 2, 1, 15, tzinfo=zone, fold=1),
+            datetime(2025, 11, 2, 1, 45, tzinfo=zone, fold=0),
+        )
+
+        with self.assertRaises(StateError):
+            write_state(self.path, [lock])
+
+        self.assertFalse(self.path.exists())
+
+    def test_wraps_utc_conversion_errors_for_outgoing_timestamps(self) -> None:
+        errors = {
+            "value": ValueError("invalid offset"),
+            "overflow": OverflowError("offset overflow"),
+        }
+        for name, error in errors.items():
+            with self.subTest(name=name):
+                invalid_start = datetime(
+                    2026,
+                    7,
+                    18,
+                    12,
+                    0,
+                    tzinfo=_FailingTimezone(error),
+                )
+                lock = ContestLock("abc467", invalid_start, self.end)
+
+                with self.assertRaises(StateError) as raised:
+                    write_state(self.path, [lock])
+
+                self.assertIs(raised.exception.__cause__, error)
 
     def test_wraps_nonabsence_read_and_unicode_decode_errors(self) -> None:
         errors = {
@@ -364,6 +449,25 @@ class TestStatePersistence(unittest.TestCase):
 
         self.assertEqual(self.path.read_bytes(), original_contents)
         self.assertEqual(list(self.directory.iterdir()), [self.path])
+
+    def test_write_preserves_primary_failure_when_temp_cleanup_fails(self) -> None:
+        replace_error = OSError("primary replace failure")
+        cleanup_error = OSError("secondary cleanup failure")
+
+        with patch("tools.push_guard.os.replace", side_effect=replace_error):
+            with patch.object(
+                Path, "unlink", side_effect=cleanup_error
+            ) as unlink:
+                with self.assertRaises(StateError) as raised:
+                    write_state(
+                        self.path,
+                        [ContestLock("abc467", self.start, self.end)],
+                    )
+
+        unlink.assert_called_once()
+        self.assertIs(raised.exception.__cause__, replace_error)
+        self.assertIn("primary replace failure", str(raised.exception))
+        self.assertNotIn("secondary cleanup failure", str(raised.exception))
 
     def _write_json(self, value: object) -> None:
         self.path.write_text(json.dumps(value), encoding="utf-8")

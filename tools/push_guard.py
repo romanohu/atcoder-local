@@ -41,12 +41,21 @@ class ContestLock:
     end_at: datetime | None
 
 
+def _decision_time_in_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("decision timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
 def status_for_lock(lock: ContestLock, now: datetime) -> str:
     if lock.end_at is None:
         return "unresolved"
-    if now < lock.start_at:
+    now_utc = _decision_time_in_utc(now)
+    start_at_utc = _decision_time_in_utc(lock.start_at)
+    end_at_utc = _decision_time_in_utc(lock.end_at)
+    if now_utc < start_at_utc:
         return "upcoming"
-    if now < lock.end_at:
+    if now_utc < end_at_utc:
         return "active"
     return "expired"
 
@@ -58,7 +67,7 @@ def blocking_contests(
         (
             lock
             for lock in locks
-            if lock.end_at is None or lock.start_at <= now < lock.end_at
+            if status_for_lock(lock, now) in {"active", "unresolved"}
         ),
         key=lambda lock: lock.contest_id,
     )
@@ -80,11 +89,16 @@ def _parse_state_timestamp(value: object, field_name: str) -> datetime:
 def _validate_datetime(value: object, field_name: str) -> datetime:
     if not isinstance(value, datetime):
         raise StateError(f"{field_name} must be a datetime")
-    if value.tzinfo is None or value.utcoffset() is None:
+    if value.tzinfo is None:
         raise StateError(f"{field_name} must be timezone-aware")
     if value.microsecond != 0:
         raise StateError(f"{field_name} must have whole-second precision")
-    return value
+    try:
+        if value.utcoffset() is None:
+            raise StateError(f"{field_name} must be timezone-aware")
+        return value.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise StateError(f"failed to convert {field_name} to UTC: {exc}") from exc
 
 
 def _validate_lock(lock: object) -> ContestLock:
@@ -97,11 +111,12 @@ def _validate_lock(lock: object) -> ContestLock:
         raise StateError(f"invalid contest ID in state: {lock.contest_id!r}")
 
     start_at = _validate_datetime(lock.start_at, "start_at")
+    end_at: datetime | None = None
     if lock.end_at is not None:
         end_at = _validate_datetime(lock.end_at, "end_at")
         if start_at >= end_at:
             raise StateError("contest start must be before contest end")
-    return lock
+    return ContestLock(lock.contest_id, start_at, end_at)
 
 
 def _validate_locks(locks: Iterable[object]) -> list[ContestLock]:
@@ -135,7 +150,7 @@ def load_state(path: Path) -> list[ContestLock]:
 
     try:
         payload = json.loads(raw, object_pairs_hook=_strict_json_object)
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise StateError(f"malformed push-guard state JSON: {exc}") from exc
 
     if not isinstance(payload, dict) or set(payload) != STATE_TOP_LEVEL_KEYS:
@@ -197,6 +212,8 @@ def write_state(path: Path, locks: Sequence[ContestLock]) -> None:
     serialized = json.dumps(payload, indent=2) + "\n"
 
     temporary_path: Path | None = None
+    primary_error: OSError | None = None
+    cleanup_error: OSError | None = None
     try:
         with NamedTemporaryFile(
             mode="w",
@@ -213,13 +230,24 @@ def write_state(path: Path, locks: Sequence[ContestLock]) -> None:
         os.replace(temporary_path, path)
         temporary_path = None
     except OSError as exc:
-        raise StateError(f"failed to replace push-guard state: {exc}") from exc
+        primary_error = exc
     finally:
         if temporary_path is not None:
             try:
                 temporary_path.unlink()
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                cleanup_error = exc
+
+    if primary_error is not None:
+        raise StateError(
+            f"failed to replace push-guard state: {primary_error}"
+        ) from primary_error
+    if cleanup_error is not None:
+        raise StateError(
+            f"failed to clean temporary push-guard state: {cleanup_error}"
+        ) from cleanup_error
 
 
 def upsert_lock(path: Path, new_lock: ContestLock) -> None:
