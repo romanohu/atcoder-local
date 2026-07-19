@@ -44,7 +44,7 @@ source "$(pwd)/tools/acc-wrapper.zsh"
 
 `install` はクローンごとに一度だけ必要です。現在有効な `core.hooksPath` が別の場所を向いている場合はエラーになり、既存の設定は書き換えません。
 
-`source` はシェルを開くたびに実行します。常に有効にする場合は、リポジトリの絶対パスを使ってシェルの起動設定に追加してください。このラッパーを通さない `acc new` では、コンテスト時刻を自動登録できません。
+`tools/acc-wrapper.zsh` はzsh用です。`source` はzshのセッションごとに実行します。常に有効にする場合は、リポジトリの絶対パスを指定した `source` 行を `~/.zshrc` に追加してください。このラッパーを通さない `acc new` では、コンテスト時刻を自動登録できません。
 
 ### 動作
 
@@ -72,7 +72,7 @@ uv run python tools/push_guard.py recover-state abc467 "2026-07-18 22:40"
 
 ### 対象と限界
 
-リポジトリの `pre-push` フックを実行する通常のGit pushと、IDEからのpushが対象です。リモート名やブランチ名による除外はありません。
+`pre-push` フックを実行する通常のGit pushとIDEからのpushが対象です。IDEがGitフックを実行しない場合、そのpushは対象外です。リモート名やブランチ名による除外はありません。
 
 `git push --no-verify`、`core.hooksPath`やフックの削除、`.git`内の状態ファイルの編集では回避できます。ローカルの設定を意図的に変更する操作までは防ぎません。
 
