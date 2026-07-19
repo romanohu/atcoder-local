@@ -425,7 +425,11 @@ def _read_effective_hooks_path(root: Path) -> str | None:
     return result.stdout
 
 
-def _resolve_hooks_path(root: Path, configured_value: str) -> Path:
+def _hooks_path_matches(
+    root: Path,
+    configured_value: str,
+    expected_hooks_path: Path,
+) -> bool:
     try:
         configured_path = Path(configured_value).expanduser()
     except (OSError, RuntimeError) as exc:
@@ -433,7 +437,12 @@ def _resolve_hooks_path(root: Path, configured_value: str) -> Path:
     if not configured_path.is_absolute():
         configured_path = root / configured_path
 
-    return _resolve_path(configured_path, "configured Git hook path")
+    try:
+        return configured_path.samefile(expected_hooks_path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, RuntimeError) as exc:
+        raise PushGuardError(f"failed to compare Git hook path: {exc}") from exc
 
 
 def guard_is_installed(root: Path) -> bool:
@@ -442,10 +451,9 @@ def guard_is_installed(root: Path) -> bool:
         return False
 
     expected_hooks_path = _resolve_path(root / HOOKS_PATH_VALUE, "Git hook path")
-    configured_hooks_path = _resolve_hooks_path(root, configured_value)
     expected_hook = expected_hooks_path / "pre-push"
     return (
-        configured_hooks_path == expected_hooks_path
+        _hooks_path_matches(root, configured_value, expected_hooks_path)
         and expected_hook.is_file()
         and os.access(expected_hook, os.X_OK)
     )
@@ -479,11 +487,12 @@ def install_hook(root: Path) -> None:
         "Git hook path",
     )
     if configured_value is not None:
-        configured_hooks_path = _resolve_hooks_path(
+        hooks_path_matches = _hooks_path_matches(
             resolved_root,
             configured_value,
+            expected_hooks_path,
         )
-        if configured_hooks_path != expected_hooks_path:
+        if not hooks_path_matches:
             raise PushGuardError(
                 "core.hooksPath is already configured to a different path: "
                 f"{configured_value}"

@@ -1042,6 +1042,38 @@ class TestHookInstallation(unittest.TestCase):
 
         self.assertEqual(self._configured_hooks_path(), configured_value)
 
+    def test_refuses_lexically_equal_path_with_missing_intermediate(self) -> None:
+        self._write_executable_hook()
+        configured_value = ".githooks/missing/.."
+        self._run_git(
+            ["config", "--local", "core.hooksPath", configured_value]
+        )
+        self.assertFalse((self.root / ".githooks" / "missing").exists())
+        hook_run = self._run_git(
+            ["hook", "run", "pre-push"],
+            check=False,
+        )
+        self.assertNotEqual(hook_run.returncode, 0)
+
+        self.assertFalse(push_guard.guard_is_installed(self.root))
+        with self.assertRaisesRegex(PushGuardError, "already configured"):
+            push_guard.install_hook(self.root)
+
+        self.assertEqual(self._configured_hooks_path(), configured_value)
+
+    def test_accepts_existing_symlink_to_expected_hooks_directory(self) -> None:
+        self._write_executable_hook()
+        alias = self.root / "hooks-alias"
+        alias.symlink_to(self.root / ".githooks", target_is_directory=True)
+        self._run_git(
+            ["config", "--local", "core.hooksPath", alias.name]
+        )
+
+        push_guard.install_hook(self.root)
+
+        self.assertTrue(push_guard.guard_is_installed(self.root))
+        self.assertEqual(self._configured_hooks_path(), alias.name)
+
     def test_refuses_conflicting_effective_worktree_hooks_path(self) -> None:
         linked = self._create_linked_worktree()
         self._write_executable_hook(linked)
@@ -1243,6 +1275,21 @@ class TestHookInstallation(unittest.TestCase):
                 push_guard.install_hook(self.root)
 
         self.assertIs(raised.exception.__cause__, resolution_error)
+
+    def test_hooks_path_identity_failures_are_wrapped(self) -> None:
+        self._write_executable_hook()
+        self._run_git(["config", "--local", "core.hooksPath", ".githooks"])
+        errors = {
+            "os": PermissionError("permission denied"),
+            "runtime": RuntimeError("identity resolution failed"),
+        }
+
+        for name, error in errors.items():
+            with self.subTest(name=name):
+                with patch.object(Path, "samefile", side_effect=error):
+                    with self.assertRaises(PushGuardError) as raised:
+                        push_guard.install_hook(self.root)
+                self.assertIs(raised.exception.__cause__, error)
 
     def test_committed_hook_has_exact_contents_mode_and_valid_syntax(self) -> None:
         hook = Path(__file__).parents[1] / ".githooks" / "pre-push"
