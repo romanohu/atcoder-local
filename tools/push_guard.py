@@ -400,10 +400,10 @@ def state_path_for_repository(root: Path) -> Path:
     return _resolve_path(raw_path, "push-guard state path")
 
 
-def _read_local_hooks_path(root: Path) -> str | None:
+def _read_effective_hooks_path(root: Path) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "config", "--local", "--get", "core.hooksPath"],
+            ["git", "config", "--get", "core.hooksPath"],
             cwd=root,
             check=False,
             capture_output=True,
@@ -437,7 +437,7 @@ def _resolve_hooks_path(root: Path, configured_value: str) -> Path:
 
 
 def guard_is_installed(root: Path) -> bool:
-    configured_value = _read_local_hooks_path(root)
+    configured_value = _read_effective_hooks_path(root)
     if configured_value is None:
         return False
 
@@ -473,7 +473,7 @@ def install_hook(root: Path) -> None:
         raise PushGuardError(f"not a repository root: {root}")
 
     _validate_expected_hook(resolved_root)
-    configured_value = _read_local_hooks_path(resolved_root)
+    configured_value = _read_effective_hooks_path(resolved_root)
     expected_hooks_path = _resolve_path(
         resolved_root / HOOKS_PATH_VALUE,
         "Git hook path",

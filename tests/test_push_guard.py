@@ -973,7 +973,9 @@ class TestHookInstallation(unittest.TestCase):
     def setUp(self) -> None:
         temporary_directory = TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
-        self.root = Path(temporary_directory.name).resolve()
+        self.directory = Path(temporary_directory.name).resolve()
+        self.root = self.directory / "main"
+        self.root.mkdir()
         self._run_git(["init"])
 
     def test_installs_unset_local_hooks_path(self) -> None:
@@ -1040,6 +1042,103 @@ class TestHookInstallation(unittest.TestCase):
 
         self.assertEqual(self._configured_hooks_path(), configured_value)
 
+    def test_refuses_conflicting_effective_worktree_hooks_path(self) -> None:
+        linked = self._create_linked_worktree()
+        self._write_executable_hook(linked)
+        self._run_git(
+            ["config", "--worktree", "core.hooksPath", "other-hooks"],
+            cwd=linked,
+        )
+
+        try:
+            with self.assertRaisesRegex(PushGuardError, "already configured"):
+                push_guard.install_hook(linked)
+
+            self.assertFalse(push_guard.guard_is_installed(linked))
+            self.assertEqual(
+                self._git_config_value(
+                    ["config", "--get", "core.hooksPath"], cwd=linked
+                ),
+                "other-hooks",
+            )
+            self.assertIsNone(
+                self._git_config_value(
+                    ["config", "--local", "--get", "core.hooksPath"],
+                    cwd=linked,
+                )
+            )
+        finally:
+            self._remove_linked_worktree(linked)
+
+    def test_accepts_expected_effective_worktree_path_without_local_write(
+        self,
+    ) -> None:
+        linked = self._create_linked_worktree()
+        self._write_executable_hook(linked)
+        self._run_git(
+            [
+                "config",
+                "--worktree",
+                "core.hooksPath",
+                push_guard.HOOKS_PATH_VALUE,
+            ],
+            cwd=linked,
+        )
+
+        try:
+            push_guard.install_hook(linked)
+
+            self.assertTrue(push_guard.guard_is_installed(linked))
+            self.assertEqual(
+                self._git_config_value(
+                    ["config", "--get", "core.hooksPath"], cwd=linked
+                ),
+                push_guard.HOOKS_PATH_VALUE,
+            )
+            self.assertIsNone(
+                self._git_config_value(
+                    ["config", "--local", "--get", "core.hooksPath"],
+                    cwd=linked,
+                )
+            )
+        finally:
+            self._remove_linked_worktree(linked)
+
+    def test_refuses_effective_hooks_path_from_local_include(self) -> None:
+        self._write_executable_hook()
+        include_path = self.directory / "included-hooks.config"
+        self._run_git(
+            [
+                "config",
+                "-f",
+                str(include_path),
+                "core.hooksPath",
+                "included-hooks",
+            ]
+        )
+        self._run_git(
+            ["config", "--local", "include.path", str(include_path)]
+        )
+        effective = self._git_config_value(
+            ["config", "--get", "core.hooksPath"]
+        )
+        if effective != "included-hooks":
+            self.skipTest("Git does not resolve core.hooksPath from local include")
+
+        with self.assertRaisesRegex(PushGuardError, "already configured"):
+            push_guard.install_hook(self.root)
+
+        self.assertFalse(push_guard.guard_is_installed(self.root))
+        self.assertEqual(
+            self._git_config_value(["config", "--get", "core.hooksPath"]),
+            "included-hooks",
+        )
+        self.assertIsNone(
+            self._git_config_value(
+                ["config", "--local", "--get", "core.hooksPath"]
+            )
+        )
+
     def test_missing_hook_prevents_configuration(self) -> None:
         with self.assertRaisesRegex(PushGuardError, "pre-push"):
             push_guard.install_hook(self.root)
@@ -1088,7 +1187,6 @@ class TestHookInstallation(unittest.TestCase):
         get_command = [
             "git",
             "config",
-            "--local",
             "--get",
             "core.hooksPath",
         ]
@@ -1175,10 +1273,17 @@ class TestHookInstallation(unittest.TestCase):
         return hook
 
     def _configured_hooks_path(self) -> str | None:
-        result = self._run_git(
-            ["config", "--local", "--get", "core.hooksPath"],
-            check=False,
+        return self._git_config_value(
+            ["config", "--local", "--get", "core.hooksPath"]
         )
+
+    def _git_config_value(
+        self,
+        arguments: list[str],
+        *,
+        cwd: Path | None = None,
+    ) -> str | None:
+        result = self._run_git(arguments, check=False, cwd=cwd)
         if result.returncode == 1:
             return None
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1191,13 +1296,49 @@ class TestHookInstallation(unittest.TestCase):
         arguments: list[str],
         *,
         check: bool = True,
+        cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", *arguments],
-            cwd=self.root,
+            cwd=self.root if cwd is None else cwd,
             check=check,
             capture_output=True,
             text=True,
+        )
+
+    def _create_linked_worktree(self) -> Path:
+        self._run_git(
+            [
+                "-c",
+                "user.name=Push Guard Test",
+                "-c",
+                "user.email=push-guard@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ]
+        )
+        self._run_git(["config", "extensions.worktreeConfig", "true"])
+        linked = self.directory / "linked"
+        added = self._run_git(
+            [
+                "worktree",
+                "add",
+                "-b",
+                "push-guard-install-linked-test",
+                str(linked),
+            ],
+            check=False,
+        )
+        if added.returncode != 0:
+            self.skipTest(f"linked worktrees unavailable: {added.stderr.strip()}")
+        return linked
+
+    def _remove_linked_worktree(self, linked: Path) -> None:
+        self._run_git(
+            ["worktree", "remove", "--force", str(linked)],
+            check=False,
         )
 
 
