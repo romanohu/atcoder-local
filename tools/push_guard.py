@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import argparse
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from http.client import HTTPException
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 from tempfile import NamedTemporaryFile
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -17,7 +21,12 @@ from urllib.request import Request, urlopen
 ATCODER_BASE_URL = "https://atcoder.jp/contests"
 CONTEST_ID_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,99}\Z")
 ATCODER_TIME_FORMAT = "%Y-%m-%d %H:%M:%S%z"
+JST = timezone(timedelta(hours=9), name="JST")
+MANUAL_END_FORMAT = "%Y-%m-%d %H:%M"
+MANUAL_END_PATTERN = re.compile(r"\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}\Z")
 STATE_VERSION = 1
+STATE_FILENAME = "atcoder-push-lock.json"
+HOOKS_PATH_VALUE = ".githooks"
 STATE_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 STATE_TIMESTAMP_PATTERN = re.compile(
     r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z"
@@ -258,6 +267,311 @@ def upsert_lock(path: Path, new_lock: ContestLock) -> None:
     write_state(path, list(locks_by_id.values()))
 
 
+def parse_manual_end(value: str, now: datetime) -> datetime:
+    if not isinstance(now, datetime):
+        raise PushGuardError("current time must be timezone-aware")
+    try:
+        now_utc = _decision_time_in_utc(now)
+    except (ValueError, OverflowError) as exc:
+        raise PushGuardError("current time must be timezone-aware") from exc
+
+    if not isinstance(value, str) or MANUAL_END_PATTERN.fullmatch(value) is None:
+        raise PushGuardError("manual end must use YYYY-MM-DD HH:MM in JST")
+    try:
+        end_at = datetime.strptime(value, MANUAL_END_FORMAT).replace(tzinfo=JST)
+        end_at_utc = end_at.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise PushGuardError(f"invalid manual end time: {exc}") from exc
+    if end_at_utc <= now_utc:
+        raise PushGuardError("manual end time must be in the future")
+    return end_at_utc
+
+
+def set_manual_end(
+    state_path: Path,
+    contest_id: str,
+    end_value: str,
+    now: datetime,
+) -> None:
+    locks = load_state(state_path)
+    matching_lock = next(
+        (lock for lock in locks if lock.contest_id == contest_id),
+        None,
+    )
+    if matching_lock is None:
+        raise PushGuardError(f"contest is not registered: {contest_id}")
+    if matching_lock.end_at is not None:
+        raise PushGuardError(f"contest already has an end time: {contest_id}")
+
+    end_at = parse_manual_end(end_value, now)
+    if _decision_time_in_utc(matching_lock.start_at) >= end_at:
+        raise PushGuardError("contest start must be before manual end time")
+
+    replacement = ContestLock(contest_id, matching_lock.start_at, end_at)
+    write_state(
+        state_path,
+        [replacement if lock.contest_id == contest_id else lock for lock in locks],
+    )
+
+
+def register_contest(
+    contest_id: str,
+    state_path: Path,
+    *,
+    fetch_schedule: Callable[[str], tuple[datetime, datetime]],
+    input_value: Callable[[str], str],
+    is_interactive: bool,
+    now: Callable[[], datetime],
+) -> None:
+    try:
+        start_at, end_at = fetch_schedule(contest_id)
+    except PushGuardError as acquisition_error:
+        failure_time = now()
+        upsert_lock(state_path, ContestLock(contest_id, failure_time, None))
+
+        if not is_interactive:
+            raise PushGuardError(
+                f"schedule unavailable for {contest_id}; end time is unresolved"
+            ) from acquisition_error
+
+        try:
+            end_value = input_value(
+                f"End time for {contest_id} in JST (YYYY-MM-DD HH:MM): "
+            )
+        except (EOFError, KeyboardInterrupt) as exc:
+            raise PushGuardError(
+                f"manual end not provided for {contest_id}; end time is unresolved"
+            ) from exc
+
+        try:
+            set_manual_end(state_path, contest_id, end_value, failure_time)
+        except StateError:
+            raise
+        except PushGuardError as exc:
+            raise PushGuardError(
+                f"invalid manual end for {contest_id}; end time is unresolved: {exc}"
+            ) from exc
+        return
+
+    upsert_lock(state_path, ContestLock(contest_id, start_at, end_at))
+
+
+def _git_rev_parse(cwd: Path, arguments: Sequence[str]) -> str:
+    command = ["git", "rev-parse", *arguments]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail = exc.stderr.strip() or detail
+        raise PushGuardError(f"Git path resolution failed: {detail}") from exc
+
+    value = result.stdout.strip()
+    if not value:
+        raise PushGuardError("Git path resolution returned empty output")
+    return value
+
+
+def repository_root(cwd: Path) -> Path:
+    return Path(_git_rev_parse(cwd, ["--show-toplevel"])).resolve()
+
+
+def state_path_for_repository(root: Path) -> Path:
+    raw_path = Path(_git_rev_parse(root, ["--git-path", STATE_FILENAME]))
+    if not raw_path.is_absolute():
+        raw_path = root / raw_path
+    return raw_path.resolve()
+
+
+def guard_is_installed(root: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "config", "--local", "--get", "core.hooksPath"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise PushGuardError(f"failed to inspect Git hook configuration: {exc}") from exc
+
+    if result.returncode == 1:
+        return False
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        raise PushGuardError(
+            f"failed to inspect Git hook configuration: {detail}"
+        )
+
+    configured_value = result.stdout.strip()
+    if not configured_value:
+        return False
+    configured_path = Path(configured_value).expanduser()
+    if not configured_path.is_absolute():
+        configured_path = root / configured_path
+
+    expected_hooks_path = (root / HOOKS_PATH_VALUE).resolve()
+    expected_hook = expected_hooks_path / "pre-push"
+    return (
+        configured_path.resolve() == expected_hooks_path
+        and expected_hook.is_file()
+        and os.access(expected_hook, os.X_OK)
+    )
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def recover_state(
+    path: Path,
+    contest_id: str,
+    manual_end: str,
+    now: datetime,
+) -> None:
+    if (
+        not isinstance(contest_id, str)
+        or CONTEST_ID_PATTERN.fullmatch(contest_id) is None
+    ):
+        raise PushGuardError(f"invalid AtCoder contest ID: {contest_id!r}")
+    end_at = parse_manual_end(manual_end, now)
+    start_at = _decision_time_in_utc(now).replace(microsecond=0)
+
+    if not path.exists():
+        raise PushGuardError("push-guard state does not exist")
+    try:
+        load_state(path)
+    except StateError:
+        pass
+    else:
+        raise PushGuardError("push-guard state is valid; recovery is refused")
+
+    timestamp = start_at.strftime("%Y%m%dT%H%M%SZ")
+    backup_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f"atcoder-push-lock.corrupt-{timestamp}-",
+            suffix=".json",
+            delete=False,
+        ) as backup_file:
+            backup_path = Path(backup_file.name)
+    except OSError as exc:
+        raise StateError(f"failed to reserve corrupt-state backup: {exc}") from exc
+
+    try:
+        shutil.copy2(path, backup_path)
+    except OSError as exc:
+        try:
+            backup_path.unlink()
+        except (FileNotFoundError, OSError):
+            pass
+        raise StateError(f"failed to back up corrupt push-guard state: {exc}") from exc
+
+    write_state(path, [ContestLock(contest_id, start_at, end_at)])
+
+
+def _create_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="AtCoder contest push guard")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("check")
+    subparsers.add_parser("status")
+
+    set_end_parser = subparsers.add_parser("set-end")
+    set_end_parser.add_argument("contest_id", metavar="CONTEST_ID")
+    set_end_parser.add_argument("end_value", metavar="YYYY-MM-DD HH:MM")
+
+    recover_parser = subparsers.add_parser("recover-state")
+    recover_parser.add_argument("contest_id", metavar="CONTEST_ID")
+    recover_parser.add_argument("end_value", metavar="YYYY-MM-DD HH:MM")
+    return parser
+
+
+def _run_check(state_path: Path, current_time: datetime) -> int:
+    try:
+        locks = load_state(state_path)
+    except StateError as exc:
+        print(f"push blocked: invalid state: {exc}", file=sys.stderr)
+        return 1
+
+    blocked = blocking_contests(locks, current_time)
+    for lock in blocked:
+        if lock.end_at is None:
+            reason = "unresolved end time"
+        else:
+            reason = f"active until {_format_state_timestamp(lock.end_at)}"
+        print(f"push blocked: {lock.contest_id} ({reason})", file=sys.stderr)
+    return 1 if blocked else 0
+
+
+def _run_status(root: Path, state_path: Path, current_time: datetime) -> int:
+    installed = guard_is_installed(root)
+    print(f"hook: {'installed' if installed else 'not installed'}")
+    try:
+        locks = load_state(state_path)
+    except StateError as exc:
+        print(f"invalid state: {exc}", file=sys.stderr)
+        return 1
+
+    for lock in sorted(locks, key=lambda item: item.contest_id):
+        status = status_for_lock(lock, current_time)
+        end_at = (
+            "unresolved"
+            if lock.end_at is None
+            else _format_state_timestamp(lock.end_at)
+        )
+        print(
+            f"{lock.contest_id}: {status} "
+            f"(start={_format_state_timestamp(lock.start_at)}, end={end_at})"
+        )
+    return 0
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    cwd: Path | None = None,
+    now: Callable[[], datetime] = utc_now,
+) -> int:
+    arguments = _create_argument_parser().parse_args(argv)
+    working_directory = Path.cwd() if cwd is None else cwd
+    try:
+        root = repository_root(working_directory)
+        state_path = state_path_for_repository(root)
+        if arguments.command == "check":
+            return _run_check(state_path, now())
+        if arguments.command == "status":
+            return _run_status(root, state_path, now())
+        if arguments.command == "set-end":
+            set_manual_end(
+                state_path,
+                arguments.contest_id,
+                arguments.end_value,
+                now(),
+            )
+            return 0
+        if arguments.command == "recover-state":
+            recover_state(
+                state_path,
+                arguments.contest_id,
+                arguments.end_value,
+                now(),
+            )
+            return 0
+    except PushGuardError as exc:
+        print(f"push-guard: {exc}", file=sys.stderr)
+        return 1
+
+    raise AssertionError(f"unhandled command: {arguments.command}")
+
+
 class _ContestDurationParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -340,3 +654,7 @@ def fetch_contest_schedule(
         raise PushGuardError(f"failed to fetch AtCoder contest schedule: {exc}") from exc
 
     return parse_contest_schedule(html)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,15 +1,21 @@
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone, tzinfo
 from http.client import BadStatusLine, IncompleteRead
+from io import StringIO
 import json
 import math
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from zoneinfo import ZoneInfo
 
+from tools import push_guard
 from tools.push_guard import (
     ContestLock,
     PushGuardError,
@@ -481,6 +487,763 @@ class TestStatePersistence(unittest.TestCase):
         }
         record.update(overrides)
         return record
+
+
+class TestContestRegistration(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.path = Path(temporary_directory.name) / "atcoder-push-lock.json"
+        self.now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        self.start = self.now - timedelta(minutes=10)
+        self.end = self.now + timedelta(hours=1, minutes=40)
+
+    def test_parses_exact_jst_manual_end_and_normalizes_to_utc(self) -> None:
+        self.assertEqual(
+            push_guard.parse_manual_end("2026-07-18 22:40", self.now),
+            datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc),
+        )
+
+    def test_manual_end_rejects_invalid_nonfuture_and_naive_now(self) -> None:
+        cases = {
+            "non-string": (None, self.now),
+            "seconds": ("2026-07-18 22:40:00", self.now),
+            "wrong separator": ("2026-07-18T22:40", self.now),
+            "not zero padded": ("2026-7-18 22:40", self.now),
+            "invalid date": ("2026-02-30 22:40", self.now),
+            "equal to now": ("2026-07-18 21:00", self.now),
+            "before now": ("2026-07-18 20:59", self.now),
+            "naive now": (
+                "2026-07-18 22:40",
+                self.now.replace(tzinfo=None),
+            ),
+            "non-datetime now": ("2026-07-18 22:40", None),
+        }
+        for name, (value, now) in cases.items():
+            with self.subTest(name=name), self.assertRaises(PushGuardError):
+                push_guard.parse_manual_end(value, now)
+
+    def test_set_manual_end_preserves_start_and_other_locks(self) -> None:
+        other = ContestLock(
+            "other",
+            self.start - timedelta(days=1),
+            self.start,
+        )
+        unresolved = ContestLock("abc467", self.start, None)
+        write_state(self.path, [other, unresolved])
+
+        push_guard.set_manual_end(
+            self.path,
+            "abc467",
+            "2026-07-18 22:40",
+            self.now,
+        )
+
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock(
+                    "abc467",
+                    self.start,
+                    datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc),
+                ),
+                other,
+            ],
+        )
+
+    def test_set_manual_end_refuses_missing_finite_and_invalid_interval(self) -> None:
+        cases = {
+            "missing": [ContestLock("other", self.start, None)],
+            "finite": [ContestLock("abc467", self.start, self.end)],
+            "start after end": [
+                ContestLock("abc467", self.now + timedelta(hours=2), None)
+            ],
+        }
+        for name, locks in cases.items():
+            with self.subTest(name=name):
+                write_state(self.path, locks)
+                original = self.path.read_bytes()
+                with self.assertRaises(PushGuardError):
+                    push_guard.set_manual_end(
+                        self.path,
+                        "abc467",
+                        "2026-07-18 22:40",
+                        self.now,
+                    )
+                self.assertEqual(self.path.read_bytes(), original)
+
+    def test_official_schedule_upserts_finite_lock_without_prompting(self) -> None:
+        prompt_calls = 0
+
+        def input_value(prompt: str) -> str:
+            nonlocal prompt_calls
+            prompt_calls += 1
+            return "2026-07-18 22:40"
+
+        push_guard.register_contest(
+            "abc467",
+            self.path,
+            fetch_schedule=lambda contest_id: (self.start, self.end),
+            input_value=input_value,
+            is_interactive=True,
+            now=lambda: self.now,
+        )
+
+        self.assertEqual(
+            load_state(self.path),
+            [ContestLock("abc467", self.start, self.end)],
+        )
+        self.assertEqual(prompt_calls, 0)
+
+    def test_fetch_failure_persists_unresolved_before_prompt_then_resolves(self) -> None:
+        prompt_calls = 0
+
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise PushGuardError("schedule unavailable")
+
+        def input_value(prompt: str) -> str:
+            nonlocal prompt_calls
+            prompt_calls += 1
+            self.assertEqual(
+                load_state(self.path),
+                [ContestLock("abc467", self.now, None)],
+            )
+            self.assertIn("JST", prompt)
+            self.assertIn("YYYY-MM-DD HH:MM", prompt)
+            return "2026-07-18 22:40"
+
+        push_guard.register_contest(
+            "abc467",
+            self.path,
+            fetch_schedule=fail_fetch,
+            input_value=input_value,
+            is_interactive=True,
+            now=lambda: self.now,
+        )
+
+        self.assertEqual(prompt_calls, 1)
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock(
+                    "abc467",
+                    self.now,
+                    datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc),
+                )
+            ],
+        )
+
+    def test_invalid_input_eof_and_interrupt_preserve_unresolved_state(self) -> None:
+        cases = {
+            "invalid": lambda prompt: "not-a-time",
+            "EOF": lambda prompt: (_ for _ in ()).throw(EOFError()),
+            "interrupt": lambda prompt: (_ for _ in ()).throw(
+                KeyboardInterrupt()
+            ),
+        }
+        for name, input_value in cases.items():
+            with self.subTest(name=name):
+                if self.path.exists():
+                    self.path.unlink()
+
+                def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+                    raise PushGuardError("schedule unavailable")
+
+                with self.assertRaises(PushGuardError) as raised:
+                    push_guard.register_contest(
+                        "abc467",
+                        self.path,
+                        fetch_schedule=fail_fetch,
+                        input_value=input_value,
+                        is_interactive=True,
+                        now=lambda: self.now,
+                    )
+
+                self.assertNotIsInstance(raised.exception, StateError)
+                self.assertEqual(
+                    load_state(self.path),
+                    [ContestLock("abc467", self.now, None)],
+                )
+
+    def test_noninteractive_failure_does_not_prompt_and_stays_unresolved(self) -> None:
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise PushGuardError("schedule unavailable")
+
+        def input_value(prompt: str) -> str:
+            self.fail("noninteractive registration must not prompt")
+
+        with self.assertRaises(PushGuardError):
+            push_guard.register_contest(
+                "abc467",
+                self.path,
+                fetch_schedule=fail_fetch,
+                input_value=input_value,
+                is_interactive=False,
+                now=lambda: self.now,
+            )
+
+        self.assertEqual(
+            load_state(self.path),
+            [ContestLock("abc467", self.now, None)],
+        )
+
+    def test_unresolved_persistence_failure_is_hard_and_does_not_prompt(self) -> None:
+        self.path.write_bytes(b"{corrupt\n")
+        original = self.path.read_bytes()
+
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise PushGuardError("schedule unavailable")
+
+        def input_value(prompt: str) -> str:
+            self.fail("registration must persist before prompting")
+
+        with self.assertRaises(StateError):
+            push_guard.register_contest(
+                "abc467",
+                self.path,
+                fetch_schedule=fail_fetch,
+                input_value=input_value,
+                is_interactive=True,
+                now=lambda: self.now,
+            )
+
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_unexpected_fetch_failure_propagates_without_state_mutation(self) -> None:
+        unexpected = RuntimeError("programmer error")
+
+        def fail_fetch(contest_id: str) -> tuple[datetime, datetime]:
+            raise unexpected
+
+        with self.assertRaises(RuntimeError) as raised:
+            push_guard.register_contest(
+                "abc467",
+                self.path,
+                fetch_schedule=fail_fetch,
+                input_value=lambda prompt: "2026-07-18 22:40",
+                is_interactive=True,
+                now=lambda: self.now,
+            )
+
+        self.assertIs(raised.exception, unexpected)
+        self.assertFalse(self.path.exists())
+
+
+class TestRepositoryPaths(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name).resolve()
+
+    def test_repository_root_uses_git_rev_parse(self) -> None:
+        nested = self.root / "nested"
+        nested.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=f"{self.root}\n",
+            stderr="",
+        )
+
+        with patch("tools.push_guard.subprocess.run", return_value=completed) as run:
+            result = push_guard.repository_root(nested)
+
+        self.assertEqual(result, self.root)
+        run.assert_called_once_with(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=nested,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_state_path_resolves_relative_git_path_against_root(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=".git/atcoder-push-lock.json\n",
+            stderr="",
+        )
+
+        with patch("tools.push_guard.subprocess.run", return_value=completed) as run:
+            result = push_guard.state_path_for_repository(self.root)
+
+        self.assertEqual(
+            result,
+            (self.root / ".git" / "atcoder-push-lock.json").resolve(),
+        )
+        run.assert_called_once_with(
+            ["git", "rev-parse", "--git-path", "atcoder-push-lock.json"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_repository_paths_reject_git_failures_and_empty_output(self) -> None:
+        git_error = subprocess.CalledProcessError(
+            128,
+            ["git", "rev-parse"],
+            stderr="not a repository",
+        )
+        with patch("tools.push_guard.subprocess.run", side_effect=git_error):
+            with self.assertRaises(PushGuardError):
+                push_guard.repository_root(self.root)
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="\n", stderr=""
+        )
+        with patch("tools.push_guard.subprocess.run", return_value=completed):
+            with self.assertRaises(PushGuardError):
+                push_guard.state_path_for_repository(self.root)
+
+    def test_guard_installation_check_is_read_only_and_requires_executable_hook(
+        self,
+    ) -> None:
+        hooks = self.root / ".githooks"
+        hooks.mkdir()
+        hook = hooks / "pre-push"
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        hook.chmod(0o755)
+        configured = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=".githooks\n", stderr=""
+        )
+
+        with patch("tools.push_guard.subprocess.run", return_value=configured):
+            self.assertTrue(push_guard.guard_is_installed(self.root))
+
+        hook.chmod(0o644)
+        with patch("tools.push_guard.subprocess.run", return_value=configured):
+            self.assertFalse(push_guard.guard_is_installed(self.root))
+
+
+class TestPushGuardCli(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name)
+        self.path = self.root / "atcoder-push-lock.json"
+        self.now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+
+    def test_check_allows_absent_empty_and_expired_state_silently(self) -> None:
+        expired = ContestLock(
+            "expired",
+            self.now - timedelta(hours=2),
+            self.now - timedelta(hours=1),
+        )
+        cases: dict[str, list[ContestLock] | None] = {
+            "absent": None,
+            "empty": [],
+            "expired": [expired],
+        }
+        for name, locks in cases.items():
+            with self.subTest(name=name):
+                self.path.unlink(missing_ok=True)
+                if locks is not None:
+                    write_state(self.path, locks)
+
+                result, stdout, stderr = self._run_main(["check"])
+
+                self.assertEqual(result, 0)
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "")
+
+    def test_check_prints_every_blocking_lock_sorted(self) -> None:
+        write_state(
+            self.path,
+            [
+                ContestLock(
+                    "zzz-active",
+                    self.now,
+                    self.now + timedelta(hours=1),
+                ),
+                ContestLock("aaa-unresolved", self.now, None),
+                ContestLock(
+                    "future",
+                    self.now + timedelta(hours=1),
+                    self.now + timedelta(hours=2),
+                ),
+            ],
+        )
+
+        result, stdout, stderr = self._run_main(["check"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "push blocked: aaa-unresolved (unresolved end time)\n"
+            "push blocked: zzz-active (active until 2026-07-18T13:00:00Z)\n",
+        )
+
+    def test_check_corrupt_state_prints_one_state_diagnostic(self) -> None:
+        self.path.write_bytes(b"{not-json\n")
+
+        result, stdout, stderr = self._run_main(["check"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertTrue(stderr.startswith("push blocked: invalid state: malformed"))
+        self.assertEqual(stderr.count("\n"), 1)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_status_prints_installation_and_all_lock_statuses_sorted(self) -> None:
+        write_state(
+            self.path,
+            [
+                ContestLock(
+                    "upcoming",
+                    self.now + timedelta(hours=1),
+                    self.now + timedelta(hours=2),
+                ),
+                ContestLock("unresolved", self.now, None),
+                ContestLock(
+                    "expired",
+                    self.now - timedelta(hours=2),
+                    self.now - timedelta(hours=1),
+                ),
+                ContestLock(
+                    "active",
+                    self.now,
+                    self.now + timedelta(hours=1),
+                ),
+            ],
+        )
+
+        result, stdout, stderr = self._run_main(["status"], installed=True)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            stdout,
+            "hook: installed\n"
+            "active: active (start=2026-07-18T12:00:00Z, "
+            "end=2026-07-18T13:00:00Z)\n"
+            "expired: expired (start=2026-07-18T10:00:00Z, "
+            "end=2026-07-18T11:00:00Z)\n"
+            "unresolved: unresolved (start=2026-07-18T12:00:00Z, "
+            "end=unresolved)\n"
+            "upcoming: upcoming (start=2026-07-18T13:00:00Z, "
+            "end=2026-07-18T14:00:00Z)\n",
+        )
+
+    def test_status_invalid_state_keeps_hook_line_and_returns_nonzero(self) -> None:
+        self.path.write_bytes(b"{not-json\n")
+
+        result, stdout, stderr = self._run_main(["status"], installed=False)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "hook: not installed\n")
+        self.assertTrue(stderr.startswith("invalid state: malformed"))
+        self.assertEqual(stderr.count("\n"), 1)
+
+    def test_set_end_command_resolves_only_unresolved_lock(self) -> None:
+        write_state(self.path, [ContestLock("abc467", self.now, None)])
+
+        result, stdout, stderr = self._run_main(
+            ["set-end", "abc467", "2026-07-18 22:40"]
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock(
+                    "abc467",
+                    self.now,
+                    datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc),
+                )
+            ],
+        )
+
+    def test_operational_error_returns_one_without_traceback(self) -> None:
+        result, stdout, stderr = self._run_main(
+            ["set-end", "missing", "2026-07-18 22:40"]
+        )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertTrue(stderr.startswith("push-guard: "))
+        self.assertNotIn("Traceback", stderr)
+
+    def test_repository_error_returns_one_without_traceback(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch(
+            "tools.push_guard.repository_root",
+            side_effect=PushGuardError("not a repository"),
+        ):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = push_guard.main(
+                    ["check"], cwd=self.root, now=lambda: self.now
+                )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "push-guard: not a repository\n")
+
+    def test_argparse_errors_keep_usage_exit_code_two(self) -> None:
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                push_guard.main([], cwd=self.root, now=lambda: self.now)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("usage:", stderr.getvalue())
+
+    def test_script_entrypoint_preserves_argparse_exit_code_two(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "tools/push_guard.py"],
+            cwd=Path(__file__).parents[1],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("usage:", result.stderr)
+
+    def _run_main(
+        self,
+        argv: list[str],
+        *,
+        installed: bool = False,
+    ) -> tuple[int, str, str]:
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("tools.push_guard.repository_root", return_value=self.root):
+            with patch(
+                "tools.push_guard.state_path_for_repository",
+                return_value=self.path,
+            ):
+                with patch(
+                    "tools.push_guard.guard_is_installed",
+                    return_value=installed,
+                ):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        result = push_guard.main(
+                            argv,
+                            cwd=self.root,
+                            now=lambda: self.now,
+                        )
+        return result, stdout.getvalue(), stderr.getvalue()
+
+
+class TestStateRecovery(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name)
+        self.path = self.root / "atcoder-push-lock.json"
+        self.now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        self.manual_end = "2026-07-18 22:40"
+        self.corrupt_contents = b"{corrupt-state\n"
+
+    def test_refuses_absent_or_valid_state_without_backup(self) -> None:
+        with self.assertRaises(PushGuardError):
+            push_guard.recover_state(
+                self.path,
+                "abc467",
+                self.manual_end,
+                self.now,
+            )
+        self.assertEqual(list(self.root.iterdir()), [])
+
+        write_state(self.path, [])
+        valid_contents = self.path.read_bytes()
+        with self.assertRaises(PushGuardError):
+            push_guard.recover_state(
+                self.path,
+                "abc467",
+                self.manual_end,
+                self.now,
+            )
+        self.assertEqual(self.path.read_bytes(), valid_contents)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
+
+    def test_validates_contest_id_and_end_before_mutation(self) -> None:
+        cases = {
+            "invalid ID": ("../abc467", self.manual_end, self.now),
+            "invalid end": ("abc467", "not-a-time", self.now),
+            "past end": ("abc467", "2026-07-18 20:00", self.now),
+            "naive now": (
+                "abc467",
+                self.manual_end,
+                self.now.replace(tzinfo=None),
+            ),
+        }
+        for name, (contest_id, manual_end, now) in cases.items():
+            with self.subTest(name=name):
+                self.path.write_bytes(self.corrupt_contents)
+
+                with self.assertRaises(PushGuardError):
+                    push_guard.recover_state(
+                        self.path,
+                        contest_id,
+                        manual_end,
+                        now,
+                    )
+
+                self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+                self.assertEqual(list(self.root.iterdir()), [self.path])
+
+    def test_copies_unique_timestamped_backup_before_atomic_replacement(
+        self,
+    ) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        events: list[str] = []
+        real_copy2 = shutil.copy2
+        real_replace = os.replace
+
+        def observing_copy2(source: Path, destination: Path) -> Path:
+            self.assertEqual(Path(source), self.path)
+            self.assertTrue(self.path.exists())
+            self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+            events.append("copy")
+            return Path(real_copy2(source, destination))
+
+        def observing_replace(source: str, destination: Path) -> None:
+            self.assertEqual(events, ["copy"])
+            self.assertEqual(Path(destination), self.path)
+            self.assertTrue(self.path.exists())
+            self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+            events.append("replace")
+            real_replace(source, destination)
+
+        with patch("tools.push_guard.shutil.copy2", side_effect=observing_copy2):
+            with patch(
+                "tools.push_guard.os.replace", side_effect=observing_replace
+            ):
+                push_guard.recover_state(
+                    self.path,
+                    "abc467",
+                    self.manual_end,
+                    self.now,
+                )
+
+        self.assertEqual(events, ["copy", "replace"])
+        backups = list(
+            self.root.glob("atcoder-push-lock.corrupt-*.json")
+        )
+        self.assertEqual(len(backups), 1)
+        self.assertTrue(
+            backups[0].name.startswith(
+                "atcoder-push-lock.corrupt-20260718T120000Z-"
+            )
+        )
+        self.assertEqual(backups[0].read_bytes(), self.corrupt_contents)
+        self.assertEqual(
+            load_state(self.path),
+            [
+                ContestLock(
+                    "abc467",
+                    self.now,
+                    datetime(2026, 7, 18, 13, 40, tzinfo=timezone.utc),
+                )
+            ],
+        )
+
+    def test_same_timestamp_recoveries_never_overwrite_prior_backup(self) -> None:
+        first_contents = b"{first-corrupt\n"
+        second_contents = b"{second-corrupt\n"
+        self.path.write_bytes(first_contents)
+        push_guard.recover_state(
+            self.path,
+            "abc467",
+            self.manual_end,
+            self.now,
+        )
+        first_backup = next(
+            self.root.glob("atcoder-push-lock.corrupt-*.json")
+        )
+
+        self.path.write_bytes(second_contents)
+        push_guard.recover_state(
+            self.path,
+            "abc468",
+            self.manual_end,
+            self.now,
+        )
+
+        backups = list(
+            self.root.glob("atcoder-push-lock.corrupt-*.json")
+        )
+        self.assertEqual(len(backups), 2)
+        self.assertEqual(first_backup.read_bytes(), first_contents)
+        self.assertEqual(
+            {backup.read_bytes() for backup in backups},
+            {first_contents, second_contents},
+        )
+
+    def test_copy_failure_deletes_reserved_backup_and_preserves_original(
+        self,
+    ) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        copy_error = OSError("copy failed")
+
+        with patch("tools.push_guard.shutil.copy2", side_effect=copy_error):
+            with self.assertRaises(StateError) as raised:
+                push_guard.recover_state(
+                    self.path,
+                    "abc467",
+                    self.manual_end,
+                    self.now,
+                )
+
+        self.assertIs(raised.exception.__cause__, copy_error)
+        self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+        self.assertEqual(list(self.root.iterdir()), [self.path])
+
+    def test_write_failure_preserves_original_and_completed_backup(self) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        replace_error = OSError("replace failed")
+
+        with patch("tools.push_guard.os.replace", side_effect=replace_error):
+            with self.assertRaises(StateError):
+                push_guard.recover_state(
+                    self.path,
+                    "abc467",
+                    self.manual_end,
+                    self.now,
+                )
+
+        self.assertEqual(self.path.read_bytes(), self.corrupt_contents)
+        backups = list(
+            self.root.glob("atcoder-push-lock.corrupt-*.json")
+        )
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), self.corrupt_contents)
+        self.assertEqual(
+            sorted(item.name for item in self.root.iterdir()),
+            sorted([self.path.name, backups[0].name]),
+        )
+
+    def test_recover_state_cli_replaces_corrupt_state(self) -> None:
+        self.path.write_bytes(self.corrupt_contents)
+        stdout = StringIO()
+        stderr = StringIO()
+        with patch("tools.push_guard.repository_root", return_value=self.root):
+            with patch(
+                "tools.push_guard.state_path_for_repository",
+                return_value=self.path,
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    result = push_guard.main(
+                        [
+                            "recover-state",
+                            "abc467",
+                            self.manual_end,
+                        ],
+                        cwd=self.root,
+                        now=lambda: self.now,
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(load_state(self.path)[0].contest_id, "abc467")
 
 
 class TestScheduleParsing(unittest.TestCase):
