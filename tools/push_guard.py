@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
@@ -399,7 +400,7 @@ def state_path_for_repository(root: Path) -> Path:
     return _resolve_path(raw_path, "push-guard state path")
 
 
-def guard_is_installed(root: Path) -> bool:
+def _read_local_hooks_path(root: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "config", "--local", "--get", "core.hooksPath"],
@@ -412,16 +413,19 @@ def guard_is_installed(root: Path) -> bool:
         raise PushGuardError(f"failed to inspect Git hook configuration: {exc}") from exc
 
     if result.returncode == 1:
-        return False
+        return None
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit status {result.returncode}"
         raise PushGuardError(
             f"failed to inspect Git hook configuration: {detail}"
         )
 
-    configured_value = result.stdout.strip()
-    if not configured_value:
-        return False
+    if result.stdout.endswith("\n"):
+        return result.stdout[:-1]
+    return result.stdout
+
+
+def _resolve_hooks_path(root: Path, configured_value: str) -> Path:
     try:
         configured_path = Path(configured_value).expanduser()
     except (OSError, RuntimeError) as exc:
@@ -429,17 +433,87 @@ def guard_is_installed(root: Path) -> bool:
     if not configured_path.is_absolute():
         configured_path = root / configured_path
 
+    return _resolve_path(configured_path, "configured Git hook path")
+
+
+def guard_is_installed(root: Path) -> bool:
+    configured_value = _read_local_hooks_path(root)
+    if configured_value is None:
+        return False
+
     expected_hooks_path = _resolve_path(root / HOOKS_PATH_VALUE, "Git hook path")
-    configured_hooks_path = _resolve_path(
-        configured_path,
-        "configured Git hook path",
-    )
+    configured_hooks_path = _resolve_hooks_path(root, configured_value)
     expected_hook = expected_hooks_path / "pre-push"
     return (
         configured_hooks_path == expected_hooks_path
         and expected_hook.is_file()
         and os.access(expected_hook, os.X_OK)
     )
+
+
+def _validate_expected_hook(root: Path) -> None:
+    hook = root / HOOKS_PATH_VALUE / "pre-push"
+    try:
+        mode = hook.stat().st_mode
+    except FileNotFoundError as exc:
+        raise PushGuardError(f"pre-push hook is missing: {hook}") from exc
+    except OSError as exc:
+        raise PushGuardError(f"failed to inspect pre-push hook: {exc}") from exc
+
+    if not stat.S_ISREG(mode):
+        raise PushGuardError(f"pre-push hook is not a regular file: {hook}")
+    if not os.access(hook, os.X_OK):
+        raise PushGuardError(f"pre-push hook is not executable: {hook}")
+
+
+def install_hook(root: Path) -> None:
+    resolved_root = _resolve_path(root, "repository root")
+    discovered_root = repository_root(resolved_root)
+    if discovered_root != resolved_root:
+        raise PushGuardError(f"not a repository root: {root}")
+
+    _validate_expected_hook(resolved_root)
+    configured_value = _read_local_hooks_path(resolved_root)
+    expected_hooks_path = _resolve_path(
+        resolved_root / HOOKS_PATH_VALUE,
+        "Git hook path",
+    )
+    if configured_value is not None:
+        configured_hooks_path = _resolve_hooks_path(
+            resolved_root,
+            configured_value,
+        )
+        if configured_hooks_path != expected_hooks_path:
+            raise PushGuardError(
+                "core.hooksPath is already configured to a different path: "
+                f"{configured_value}"
+            )
+        return
+
+    command = [
+        "git",
+        "config",
+        "--local",
+        "core.hooksPath",
+        HOOKS_PATH_VALUE,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=resolved_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, UnicodeError) as exc:
+        raise PushGuardError(
+            f"failed to configure Git hook path: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        raise PushGuardError(f"failed to configure Git hook path: {detail}")
+    if not guard_is_installed(resolved_root):
+        raise PushGuardError("failed to verify installed pre-push hook")
 
 
 def utc_now() -> datetime:
@@ -524,6 +598,7 @@ def _create_argument_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("check")
     subparsers.add_parser("status")
+    subparsers.add_parser("install")
 
     set_end_parser = subparsers.add_parser("set-end")
     set_end_parser.add_argument("contest_id", metavar="CONTEST_ID")
@@ -585,6 +660,9 @@ def main(
     working_directory = Path.cwd() if cwd is None else cwd
     try:
         root = repository_root(working_directory)
+        if arguments.command == "install":
+            install_hook(root)
+            return 0
         state_path = state_path_for_repository(root)
         if arguments.command == "check":
             return _run_check(state_path, now())

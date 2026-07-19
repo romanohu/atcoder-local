@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -761,6 +762,79 @@ class TestRepositoryPaths(unittest.TestCase):
             text=True,
         )
 
+    def test_repository_and_state_paths_use_real_git_repository(self) -> None:
+        self._run_git(["init"])
+        nested = self.root / "nested"
+        nested.mkdir()
+
+        self.assertEqual(push_guard.repository_root(nested), self.root)
+        self.assertEqual(
+            push_guard.state_path_for_repository(self.root),
+            self.root / ".git" / push_guard.STATE_FILENAME,
+        )
+
+    def test_linked_worktree_uses_its_git_state_path(self) -> None:
+        main = self.root / "main"
+        linked = self.root / "linked"
+        main.mkdir()
+        self._run_git(["init"], cwd=main)
+        tracked = main / "tracked.txt"
+        tracked.write_text("initial\n", encoding="utf-8")
+        self._run_git(["add", "tracked.txt"], cwd=main)
+        self._run_git(
+            [
+                "-c",
+                "user.name=Push Guard Test",
+                "-c",
+                "user.email=push-guard@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            cwd=main,
+        )
+        added = subprocess.run(
+            [
+                "git",
+                "worktree",
+                "add",
+                "-b",
+                "push-guard-linked-state-test",
+                str(linked),
+            ],
+            cwd=main,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if added.returncode != 0:
+            self.skipTest(f"linked worktrees unavailable: {added.stderr.strip()}")
+
+        try:
+            nested = linked / "nested"
+            nested.mkdir()
+            raw_state_path = self._run_git(
+                ["rev-parse", "--git-path", push_guard.STATE_FILENAME],
+                cwd=linked,
+            ).stdout.strip()
+            expected = Path(raw_state_path)
+            if not expected.is_absolute():
+                expected = linked / expected
+
+            self.assertEqual(push_guard.repository_root(nested), linked.resolve())
+            self.assertEqual(
+                push_guard.state_path_for_repository(linked),
+                expected.resolve(),
+            )
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(linked)],
+                cwd=main,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
     def test_state_path_resolves_relative_git_path_against_root(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[],
@@ -879,6 +953,252 @@ class TestRepositoryPaths(unittest.TestCase):
         hook.chmod(0o644)
         with patch("tools.push_guard.subprocess.run", return_value=configured):
             self.assertFalse(push_guard.guard_is_installed(self.root))
+
+    def _run_git(
+        self,
+        arguments: list[str],
+        *,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=self.root if cwd is None else cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+class TestHookInstallation(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        self.root = Path(temporary_directory.name).resolve()
+        self._run_git(["init"])
+
+    def test_installs_unset_local_hooks_path(self) -> None:
+        self._write_executable_hook()
+
+        push_guard.install_hook(self.root)
+
+        self.assertEqual(self._configured_hooks_path(), ".githooks")
+        self.assertTrue(push_guard.guard_is_installed(self.root))
+
+    def test_repeated_install_does_not_mutate_configuration(self) -> None:
+        self._write_executable_hook()
+        push_guard.install_hook(self.root)
+        real_run = subprocess.run
+        commands: list[list[str]] = []
+
+        def record_run(command: list[str], **kwargs: object) -> object:
+            commands.append(command)
+            return real_run(command, **kwargs)
+
+        with patch("tools.push_guard.subprocess.run", side_effect=record_run):
+            push_guard.install_hook(self.root)
+
+        set_command = [
+            "git",
+            "config",
+            "--local",
+            "core.hooksPath",
+            push_guard.HOOKS_PATH_VALUE,
+        ]
+        self.assertNotIn(set_command, commands)
+        self.assertEqual(self._configured_hooks_path(), ".githooks")
+
+    def test_accepts_absolute_path_resolving_to_expected_hooks_directory(
+        self,
+    ) -> None:
+        self._write_executable_hook()
+        absolute_path = str((self.root / ".githooks").resolve())
+        self._run_git(["config", "--local", "core.hooksPath", absolute_path])
+
+        push_guard.install_hook(self.root)
+
+        self.assertEqual(self._configured_hooks_path(), absolute_path)
+        self.assertTrue(push_guard.guard_is_installed(self.root))
+
+    def test_refuses_different_hooks_path_without_changing_it(self) -> None:
+        self._write_executable_hook()
+        self._run_git(["config", "--local", "core.hooksPath", "other-hooks"])
+
+        with self.assertRaisesRegex(PushGuardError, "already configured"):
+            push_guard.install_hook(self.root)
+
+        self.assertEqual(self._configured_hooks_path(), "other-hooks")
+
+    def test_does_not_trim_whitespace_from_configured_hooks_path(self) -> None:
+        self._write_executable_hook()
+        configured_value = " .githooks "
+        self._run_git(
+            ["config", "--local", "core.hooksPath", configured_value]
+        )
+
+        with self.assertRaisesRegex(PushGuardError, "already configured"):
+            push_guard.install_hook(self.root)
+
+        self.assertEqual(self._configured_hooks_path(), configured_value)
+
+    def test_missing_hook_prevents_configuration(self) -> None:
+        with self.assertRaisesRegex(PushGuardError, "pre-push"):
+            push_guard.install_hook(self.root)
+
+        self.assertIsNone(self._configured_hooks_path())
+
+    def test_directory_in_place_of_hook_prevents_configuration(self) -> None:
+        hook = self.root / ".githooks" / "pre-push"
+        hook.mkdir(parents=True)
+
+        with self.assertRaisesRegex(PushGuardError, "regular file"):
+            push_guard.install_hook(self.root)
+
+        self.assertIsNone(self._configured_hooks_path())
+
+    def test_non_executable_hook_prevents_configuration(self) -> None:
+        hook = self._write_executable_hook()
+        hook.chmod(0o644)
+
+        with self.assertRaisesRegex(PushGuardError, "executable"):
+            push_guard.install_hook(self.root)
+
+        self.assertIsNone(self._configured_hooks_path())
+
+    def test_non_repository_is_rejected_before_configuration(self) -> None:
+        temporary_directory = TemporaryDirectory()
+        self.addCleanup(temporary_directory.cleanup)
+        non_repository = Path(temporary_directory.name).resolve()
+        self._write_executable_hook(non_repository)
+
+        with self.assertRaisesRegex(PushGuardError, "Git path resolution"):
+            push_guard.install_hook(non_repository)
+
+    def test_config_get_failures_are_wrapped_without_mutation(self) -> None:
+        self._write_executable_hook()
+        real_run = subprocess.run
+        decode_error = UnicodeDecodeError(
+            "utf-8", b"\xff", 0, 1, "invalid start byte"
+        )
+        failures: dict[str, object] = {
+            "nonzero": subprocess.CompletedProcess(
+                args=[], returncode=2, stdout="", stderr="config failed"
+            ),
+            "decode": decode_error,
+        }
+        get_command = [
+            "git",
+            "config",
+            "--local",
+            "--get",
+            "core.hooksPath",
+        ]
+        for name, failure in failures.items():
+            def fail_get(command: list[str], **kwargs: object) -> object:
+                if command == get_command:
+                    if isinstance(failure, BaseException):
+                        raise failure
+                    return failure
+                return real_run(command, **kwargs)
+
+            with self.subTest(name=name):
+                with patch(
+                    "tools.push_guard.subprocess.run", side_effect=fail_get
+                ):
+                    with self.assertRaises(PushGuardError):
+                        push_guard.install_hook(self.root)
+                self.assertIsNone(self._configured_hooks_path())
+
+    def test_config_set_failure_is_wrapped_and_remains_unset(self) -> None:
+        self._write_executable_hook()
+        real_run = subprocess.run
+        set_command = [
+            "git",
+            "config",
+            "--local",
+            "core.hooksPath",
+            push_guard.HOOKS_PATH_VALUE,
+        ]
+
+        def fail_set(command: list[str], **kwargs: object) -> object:
+            if command == set_command:
+                return subprocess.CompletedProcess(
+                    args=command,
+                    returncode=5,
+                    stdout="",
+                    stderr="config write failed",
+                )
+            return real_run(command, **kwargs)
+
+        with patch("tools.push_guard.subprocess.run", side_effect=fail_set):
+            with self.assertRaisesRegex(PushGuardError, "config write failed"):
+                push_guard.install_hook(self.root)
+
+        self.assertIsNone(self._configured_hooks_path())
+
+    def test_configured_path_resolution_failure_is_wrapped(self) -> None:
+        self._write_executable_hook()
+        self._run_git(["config", "--local", "core.hooksPath", ".githooks"])
+        resolution_error = RuntimeError("symlink loop")
+
+        with patch.object(Path, "resolve", side_effect=resolution_error):
+            with self.assertRaises(PushGuardError) as raised:
+                push_guard.install_hook(self.root)
+
+        self.assertIs(raised.exception.__cause__, resolution_error)
+
+    def test_committed_hook_has_exact_contents_mode_and_valid_syntax(self) -> None:
+        hook = Path(__file__).parents[1] / ".githooks" / "pre-push"
+        expected = (
+            "#!/bin/sh\n"
+            "\n"
+            "repo_root=$(git rev-parse --show-toplevel) || exit 1\n"
+            'exec python3 "$repo_root/tools/push_guard.py" check\n'
+        )
+
+        self.assertEqual(hook.read_text(encoding="utf-8"), expected)
+        self.assertTrue(stat.S_ISREG(hook.stat().st_mode))
+        self.assertTrue(os.access(hook, os.X_OK))
+        subprocess.run(
+            ["/bin/sh", "-n", str(hook)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def _write_executable_hook(self, root: Path | None = None) -> Path:
+        target_root = self.root if root is None else root
+        hooks = target_root / ".githooks"
+        hooks.mkdir()
+        hook = hooks / "pre-push"
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        hook.chmod(0o755)
+        return hook
+
+    def _configured_hooks_path(self) -> str | None:
+        result = self._run_git(
+            ["config", "--local", "--get", "core.hooksPath"],
+            check=False,
+        )
+        if result.returncode == 1:
+            return None
+        self.assertEqual(result.returncode, 0, result.stderr)
+        if result.stdout.endswith("\n"):
+            return result.stdout[:-1]
+        return result.stdout
+
+    def _run_git(
+        self,
+        arguments: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=self.root,
+            check=check,
+            capture_output=True,
+            text=True,
+        )
 
 
 class TestPushGuardCli(unittest.TestCase):
@@ -1032,6 +1352,74 @@ class TestPushGuardCli(unittest.TestCase):
         self.assertTrue(stderr.startswith("push-guard: "))
         self.assertNotIn("Traceback", stderr)
 
+    def test_install_command_succeeds_first_and_repeated_time(self) -> None:
+        self._initialize_git_repository_with_hook()
+
+        first = self._run_unmocked_main(["install"])
+        repeated = self._run_unmocked_main(["install"])
+
+        self.assertEqual(first, (0, "", ""))
+        self.assertEqual(repeated, (0, "", ""))
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", "core.hooksPath"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(configured.stdout, ".githooks\n")
+
+    def test_install_command_reports_conflict_without_changing_config(self) -> None:
+        self._initialize_git_repository_with_hook()
+        subprocess.run(
+            ["git", "config", "--local", "core.hooksPath", "other-hooks"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        result, stdout, stderr = self._run_unmocked_main(["install"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertTrue(stderr.startswith("push-guard: "))
+        self.assertEqual(stderr.count("\n"), 1)
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", "core.hooksPath"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(configured.stdout, "other-hooks\n")
+
+    def test_install_command_reports_invalid_hook_without_configuration(
+        self,
+    ) -> None:
+        subprocess.run(
+            ["git", "init"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        result, stdout, stderr = self._run_unmocked_main(["install"])
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertTrue(stderr.startswith("push-guard: "))
+        self.assertIn("pre-push", stderr)
+        configured = subprocess.run(
+            ["git", "config", "--local", "--get", "core.hooksPath"],
+            cwd=self.root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(configured.returncode, 1)
+
     def test_repository_error_returns_one_without_traceback(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
@@ -1093,6 +1481,34 @@ class TestPushGuardCli(unittest.TestCase):
                             now=lambda: self.now,
                         )
         return result, stdout.getvalue(), stderr.getvalue()
+
+    def _run_unmocked_main(
+        self,
+        argv: list[str],
+    ) -> tuple[int, str, str]:
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = push_guard.main(
+                argv,
+                cwd=self.root,
+                now=lambda: self.now,
+            )
+        return result, stdout.getvalue(), stderr.getvalue()
+
+    def _initialize_git_repository_with_hook(self) -> None:
+        subprocess.run(
+            ["git", "init"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        hooks = self.root / ".githooks"
+        hooks.mkdir()
+        hook = hooks / "pre-push"
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        hook.chmod(0o755)
 
 
 class TestStateRecovery(unittest.TestCase):
