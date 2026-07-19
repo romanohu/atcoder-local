@@ -3,10 +3,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+if __package__:
+    from . import push_guard
+else:  # Direct execution from tools/acc-wrapper.zsh.
+    import push_guard
+
 
 COMMANDS_FOR_NEW = {"new", "n"}
+INSTALL_COMMAND = "uv run python tools/push_guard.py install"
 OPTIONS_WITH_VALUE = {
     "-c",
     "--choice",
@@ -16,6 +24,31 @@ OPTIONS_WITH_VALUE = {
     "--task-dirname-format",
     "--template",
 }
+
+
+@dataclass(frozen=True)
+class WrapperOperations:
+    preflight_guard: Callable[[Path], Path]
+    create_memo: Callable[[list[str], Path], None]
+    register_contest: Callable[[str, Path], None]
+
+
+def preflight_guard(cwd: Path) -> Path:
+    root = push_guard.repository_root(cwd)
+    if not push_guard.guard_is_installed(root):
+        raise push_guard.PushGuardError("pre-push guard is not installed")
+    return push_guard.state_path_for_repository(root)
+
+
+def register_contest_lock(contest_id: str, state_path: Path) -> None:
+    push_guard.register_contest(
+        contest_id,
+        state_path,
+        fetch_schedule=push_guard.fetch_contest_schedule,
+        input_value=input,
+        is_interactive=sys.stdin.isatty(),
+        now=push_guard.utc_now,
+    )
 
 
 def first_nonempty_line(text: str) -> str:
@@ -150,20 +183,67 @@ def maybe_create_memo(args: list[str], cwd: Path) -> None:
     print(f"[acc-wrapper] skip memo.md: {(contest_dir / 'memo.md')} already exists.")
 
 
-def main(argv: list[str] | None = None) -> int:
+def default_operations() -> WrapperOperations:
+    return WrapperOperations(
+        preflight_guard=preflight_guard,
+        create_memo=maybe_create_memo,
+        register_contest=register_contest_lock,
+    )
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    cwd: Path | None = None,
+    acc_runner: Callable[[list[str]], int] | None = None,
+    operations: WrapperOperations | None = None,
+) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    result = subprocess.run(["acc", *args], check=False)
-    if result.returncode != 0:
-        return result.returncode
+    working_directory = Path.cwd() if cwd is None else cwd
+    contest_id = extract_contest_id(args)
+    state_path: Path | None = None
+    active_operations = operations
+    if contest_id is not None:
+        if active_operations is None:
+            active_operations = default_operations()
+        try:
+            state_path = active_operations.preflight_guard(working_directory)
+        except push_guard.PushGuardError as exc:
+            print(f"[acc-wrapper] push guard unavailable: {exc}", file=sys.stderr)
+            print(
+                f"[acc-wrapper] install it with: {INSTALL_COMMAND}",
+                file=sys.stderr,
+            )
+            return 1
+
+    if acc_runner is None:
+        result = subprocess.run(["acc", *args], check=False)
+        returncode = result.returncode
+    else:
+        returncode = acc_runner(args)
+    if returncode != 0:
+        return returncode
 
     if args and args[0] in COMMANDS_FOR_NEW:
         try:
-            maybe_create_memo(args, Path.cwd())
-        except Exception as exc:  # pragma: no cover
+            if contest_id is not None:
+                assert active_operations is not None
+                active_operations.create_memo(args, working_directory)
+        except Exception as exc:
             print(f"[acc-wrapper] failed to create memo.md: {exc}", file=sys.stderr)
-    return result.returncode
+    if contest_id is not None:
+        assert state_path is not None
+        assert active_operations is not None
+        try:
+            active_operations.register_contest(contest_id, state_path)
+        except push_guard.PushGuardError as exc:
+            print(
+                f"[acc-wrapper] failed to register contest {contest_id}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+    return returncode
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
