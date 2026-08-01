@@ -233,6 +233,42 @@ def test_bundle_rejects_unbundled_local_include_and_preserves_old_output(
     assert not temporary.exists()
 
 
+def test_bundle_rejects_unbundled_local_include_with_trailing_comment(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output = tmp_path / ".atcoder-local/build/abc999/a/bundled.cpp"
+    temporary = output.with_name(".bundled.cpp.tmp")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            "#include <atcoder_local/core.hpp> // retained comment\n",
+            "",
+        )
+
+    with pytest.raises(WorkflowError, match="unbundled local include.*use quotes"):
+        bundle_cpp(
+            source_path=source,
+            output_path=output,
+            working_dir=tmp_path,
+            library_dir=tmp_path / "library",
+            runner=runner,
+        )
+
+    assert not output.exists()
+    assert not temporary.exists()
+
+
 @pytest.mark.parametrize("operation", ["compile", "bundle"])
 def test_spawn_oserror_is_normalized_and_cleans_temporary(
     tmp_path: Path, operation: str

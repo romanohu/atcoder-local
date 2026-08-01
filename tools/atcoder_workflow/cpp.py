@@ -11,7 +11,7 @@ from .runner import ProcessRunner
 
 
 UNBUNDLED_LOCAL_INCLUDE = re.compile(
-    r"^\s*#\s*include\s*<atcoder_local/[^>]+>\s*$", re.MULTILINE
+    r"^\s*#\s*include\s*<atcoder_local/[^>]+>", re.MULTILINE
 )
 
 
