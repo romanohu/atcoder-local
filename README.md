@@ -8,8 +8,6 @@
 クローン
 ```sh
 git clone <url>
-# 既存のcontests/ が不要なら
-rm -rf ./contests
 ```
 
 ツールのインストール
