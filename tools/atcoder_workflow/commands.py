@@ -203,10 +203,75 @@ def run_tests(
     debug: bool = False,
 ) -> int:
     mode = BuildMode.DEBUG if debug else BuildMode.RELEASE
-    binary_path = run_build(context, dependencies, mode=mode)
-    return run_samples(
-        binary_path, context.test_dir, context.task_dir, dependencies.runner
+    candidate_path = context.build_dir / ".submission.cpp.pending"
+    submission_path = context.build_dir / "submission.cpp"
+    try:
+        prepared_candidate, binary_path = _prepare_submission_candidate(
+            context, dependencies, mode
+        )
+        assert prepared_candidate == candidate_path
+        sample_returncode = run_samples(
+            binary_path, context.test_dir, context.task_dir, dependencies.runner
+        )
+        if sample_returncode != 0:
+            return sample_returncode
+        try:
+            candidate_path.replace(submission_path)
+        except OSError as error:
+            raise WorkflowError(
+                f"cannot publish submission artifact: {submission_path}"
+            ) from error
+        return 0
+    finally:
+        _discard_generated_file(candidate_path, "pending submission artifact")
+
+
+def _prepare_submission_candidate(
+    context: TaskContext,
+    dependencies: WorkflowDependencies,
+    mode: BuildMode,
+) -> tuple[Path, Path]:
+    _require_cpp_source(context)
+    submission_path = context.build_dir / "submission.cpp"
+    candidate_path = context.build_dir / ".submission.cpp.pending"
+    binary_name = (
+        "submission-main-debug" if mode is BuildMode.DEBUG else "submission-main"
     )
+    binary_path = context.build_dir / binary_name
+    library_dir = context.repository_root / "library"
+
+    _discard_generated_file(submission_path, "verified submission artifact")
+    _discard_generated_file(candidate_path, "pending submission artifact")
+    compiler = detect_compiler(
+        dependencies.environ, dependencies.runner, dependencies.which
+    )
+    bundle_environment = dict(dependencies.environ)
+    bundle_environment["CXX"] = compiler.executable
+    bundle_cpp(
+        source_path=context.source_path,
+        output_path=candidate_path,
+        working_dir=context.task_dir,
+        library_dir=library_dir,
+        runner=dependencies.runner,
+        environment=bundle_environment,
+    )
+    compile_cpp(
+        source_path=candidate_path,
+        output_path=binary_path,
+        working_dir=context.task_dir,
+        compiler=compiler,
+        mode=mode,
+        library_dir=library_dir,
+        runner=dependencies.runner,
+    )
+    return candidate_path, binary_path
+
+
+def _discard_generated_file(path: Path, description: str) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        raise WorkflowError(f"cannot remove {description}: {path}") from error
 
 
 def run_submit(

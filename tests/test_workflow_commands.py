@@ -47,6 +47,29 @@ CONTEXT = TaskContext(
 )
 
 
+def submission_context(tmp_path: Path) -> TaskContext:
+    repository_root = tmp_path / "repo"
+    task_dir = repository_root / "contests/abc999/a"
+    source_path = task_dir / "main.cpp"
+    test_dir = task_dir / "test"
+    library_header = repository_root / "library/atcoder_local/core.hpp"
+    test_dir.mkdir(parents=True)
+    library_header.parent.mkdir(parents=True)
+    source_path.write_text("int main() {}\n", encoding="utf-8")
+    library_header.write_text("#pragma once\n", encoding="utf-8")
+    return TaskContext(
+        repository_root=repository_root,
+        contest_id="abc999",
+        task_id="abc999_a",
+        task_label="A",
+        contest_dir=task_dir.parent,
+        task_dir=task_dir,
+        source_path=source_path,
+        test_dir=test_dir,
+        build_dir=repository_root / ".atcoder-local/build/abc999/abc999_a",
+    )
+
+
 def unused_runner(
     argv: Sequence[str],
     *,
@@ -182,6 +205,54 @@ def patched_submit_stages(
         yield bundle, compile_, samples
 
 
+@contextmanager
+def patched_test_stages(
+    context: TaskContext,
+    *,
+    failed_stage: str | None = None,
+) -> Iterator[tuple[list[str], Mock, Mock, Mock]]:
+    events: list[str] = []
+
+    def bundle_stage(**kwargs: object) -> Path:
+        events.append("bundle")
+        if failed_stage == "bundle":
+            raise WorkflowError("bundle failed")
+        output = kwargs["output_path"]
+        assert isinstance(output, Path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("bundled source\n", encoding="utf-8")
+        return output
+
+    def compile_stage(**kwargs: object) -> Path:
+        events.append("compile")
+        if failed_stage == "compile":
+            raise WorkflowError("compile failed")
+        output = kwargs["output_path"]
+        assert isinstance(output, Path)
+        return output
+
+    def sample_stage(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        events.append("samples")
+        return 17 if failed_stage == "samples" else 0
+
+    with (
+        patch(
+            "tools.atcoder_workflow.commands.detect_compiler", return_value=GCC15
+        ),
+        patch(
+            "tools.atcoder_workflow.commands.bundle_cpp", side_effect=bundle_stage
+        ) as bundle,
+        patch(
+            "tools.atcoder_workflow.commands.compile_cpp", side_effect=compile_stage
+        ) as compile_,
+        patch(
+            "tools.atcoder_workflow.commands.run_samples", side_effect=sample_stage
+        ) as samples,
+    ):
+        yield events, bundle, compile_, samples
+
+
 def test_run_build_uses_release_output_and_repository_library() -> None:
     with (
         patch(
@@ -230,54 +301,131 @@ def test_run_program_builds_before_running_and_propagates_exit_code() -> None:
     run.assert_called_once_with(binary, CONTEXT.task_dir, DEPENDENCIES.runner)
 
 
-def test_run_tests_builds_before_samples_and_propagates_failure() -> None:
+def test_run_tests_bundles_compiles_samples_then_publishes_release_artifact(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
     events: list[str] = []
-    binary = CONTEXT.build_dir / "main"
-    with (
-        patch(
-            "tools.atcoder_workflow.commands.run_build",
-            side_effect=lambda *args, **kwargs: events.append("compile") or binary,
-        ) as build,
-        patch(
-            "tools.atcoder_workflow.commands.run_samples",
-            side_effect=lambda *args, **kwargs: events.append("samples") or 19,
-        ) as samples,
-    ):
-        result = run_tests(CONTEXT, DEPENDENCIES)
+    published = context.build_dir / "submission.cpp"
+    candidate = context.build_dir / ".submission.cpp.pending"
+    binary = context.build_dir / "submission-main"
 
-    assert result == 19
-    assert events == ["compile", "samples"]
-    build.assert_called_once_with(CONTEXT, DEPENDENCIES, mode=BuildMode.RELEASE)
-    samples.assert_called_once_with(
-        binary, CONTEXT.test_dir, CONTEXT.task_dir, DEPENDENCIES.runner
-    )
+    def bundle_stage(**kwargs: object) -> Path:
+        events.append("bundle")
+        output = kwargs["output_path"]
+        assert isinstance(output, Path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("bundled source\n", encoding="utf-8")
+        return output
 
-
-def test_run_tests_debug_selects_debug_build_and_output() -> None:
-    binary = CONTEXT.build_dir / "main-debug"
     with (
         patch(
             "tools.atcoder_workflow.commands.detect_compiler", return_value=GCC15
         ),
         patch(
-            "tools.atcoder_workflow.commands.compile_cpp", return_value=binary
+            "tools.atcoder_workflow.commands.bundle_cpp", side_effect=bundle_stage
+        ) as bundle,
+        patch(
+            "tools.atcoder_workflow.commands.compile_cpp",
+            side_effect=lambda **kwargs: events.append("compile")
+            or kwargs["output_path"],
         ) as compile_,
         patch(
-            "tools.atcoder_workflow.commands.run_samples", return_value=0
+            "tools.atcoder_workflow.commands.run_samples",
+            side_effect=lambda *args: events.append("samples") or 0,
         ) as samples,
     ):
-        result = run_tests(CONTEXT, DEPENDENCIES, debug=True)
+        result = run_tests(context, DEPENDENCIES)
 
     assert result == 0
-    assert compile_.call_args.kwargs["mode"] is BuildMode.DEBUG
+    assert events == ["bundle", "compile", "samples"]
+    assert published.read_text(encoding="utf-8") == "bundled source\n"
+    assert not candidate.exists()
+    bundle.assert_called_once_with(
+        source_path=context.source_path,
+        output_path=candidate,
+        working_dir=context.task_dir,
+        library_dir=context.repository_root / "library",
+        runner=DEPENDENCIES.runner,
+        environment={**DEPENDENCIES.environ, "CXX": GCC15.executable},
+    )
+    assert compile_.call_args.kwargs["source_path"] == candidate
     assert compile_.call_args.kwargs["output_path"] == binary
+    assert compile_.call_args.kwargs["mode"] is BuildMode.RELEASE
     samples.assert_called_once_with(
-        binary, CONTEXT.test_dir, CONTEXT.task_dir, DEPENDENCIES.runner
+        binary, context.test_dir, context.task_dir, DEPENDENCIES.runner
     )
 
 
-@pytest.mark.parametrize("command", ["run", "test"])
-def test_failed_build_stops_before_later_stage(command: str) -> None:
+def test_run_tests_compiler_failure_invalidates_previous_submission(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
+    published = context.build_dir / "submission.cpp"
+    published.parent.mkdir(parents=True, exist_ok=True)
+    published.write_text("old verified source\n", encoding="utf-8")
+
+    with patch(
+        "tools.atcoder_workflow.commands.detect_compiler",
+        side_effect=WorkflowError("compiler detection failed"),
+    ):
+        with pytest.raises(WorkflowError, match="compiler detection failed"):
+            run_tests(context, DEPENDENCIES)
+
+    assert not published.exists()
+
+
+def test_run_tests_debug_compiles_pending_bundle_to_debug_output(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
+    with patched_test_stages(context) as (events, _, compile_, samples):
+        assert run_tests(context, DEPENDENCIES, debug=True) == 0
+
+    assert events == ["bundle", "compile", "samples"]
+    assert compile_.call_args.kwargs["source_path"] == (
+        context.build_dir / ".submission.cpp.pending"
+    )
+    assert compile_.call_args.kwargs["output_path"] == (
+        context.build_dir / "submission-main-debug"
+    )
+    assert compile_.call_args.kwargs["mode"] is BuildMode.DEBUG
+    samples.assert_called_once()
+
+
+@pytest.mark.parametrize("failed_stage", ["bundle", "compile", "samples"])
+def test_run_tests_failure_invalidates_submission_and_cleans_candidate(
+    tmp_path: Path,
+    failed_stage: str,
+) -> None:
+    context = submission_context(tmp_path)
+    published = context.build_dir / "submission.cpp"
+    candidate = context.build_dir / ".submission.cpp.pending"
+    published.parent.mkdir(parents=True, exist_ok=True)
+    published.write_text("old verified source\n", encoding="utf-8")
+
+    with patched_test_stages(context, failed_stage=failed_stage) as (
+        events,
+        _,
+        _,
+        _,
+    ):
+        if failed_stage == "samples":
+            assert run_tests(context, DEPENDENCIES) == 17
+        else:
+            with pytest.raises(WorkflowError, match=f"{failed_stage} failed"):
+                run_tests(context, DEPENDENCIES)
+
+    assert not published.exists()
+    assert not candidate.exists()
+    assert events == {
+        "bundle": ["bundle"],
+        "compile": ["bundle", "compile"],
+        "samples": ["bundle", "compile", "samples"],
+    }[failed_stage]
+
+
+def test_failed_build_stops_before_run() -> None:
     build_error = WorkflowError("compile failed")
     with (
         patch(
@@ -287,10 +435,7 @@ def test_failed_build_stops_before_later_stage(command: str) -> None:
         patch("tools.atcoder_workflow.commands.run_samples") as samples,
     ):
         with pytest.raises(WorkflowError) as raised:
-            if command == "run":
-                run_program(CONTEXT, DEPENDENCIES)
-            else:
-                run_tests(CONTEXT, DEPENDENCIES)
+            run_program(CONTEXT, DEPENDENCIES)
 
     assert raised.value is build_error
     run.assert_not_called()
