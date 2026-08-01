@@ -33,7 +33,7 @@ npm install -g atcoder-cli
 リポジトリルートで次を実行します。テンプレートの設定値には、このクローンの絶対パスが保存されます。
 
 ```sh
-acc check-oj
+uv run acc check-oj
 acc config default-task-choice all
 acc config default-template "$(pwd)/template/cpp"
 acc config default-contest-dirname-format 'contests/{ContestID}'
@@ -62,7 +62,7 @@ bash:
 source "$(pwd)/tools/acc-wrapper.bash"
 ```
 
-ラッパーは現在のシェルセッションだけで有効です。常時使用する場合は、対応する `source` 行を `~/.zshrc` または `~/.bashrc` に追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。ラッパーを通さない `acc new` は、push-guard へのコンテスト登録と `memo.md` の生成を行いません。
+ラッパーは現在のシェルセッションだけで有効です。セットアップコマンドとラッパーは `.zshrc` や `.bashrc` を自動では変更しません。常時使用する場合は、ユーザーが対応する `source` 行を `~/.zshrc` または `~/.bashrc` へ手動で追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。ラッパーを通さない `acc new` は、push-guard へのコンテスト登録と `memo.md` の生成を行いません。
 
 ## push-guard のインストール
 

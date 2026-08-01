@@ -71,6 +71,7 @@ def test_readme_documents_complete_workflow() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     required = [
         "uv sync --group dev",
+        "uv run acc check-oj",
         "tools/acc-wrapper.zsh",
         "tools/acc-wrapper.bash",
         "acc doctor",
@@ -86,6 +87,12 @@ def test_readme_documents_complete_workflow() -> None:
     ]
     for fragment in required:
         assert fragment in readme
+
+
+def test_readme_documents_shell_startup_file_edits_are_manual() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "`.zshrc` や `.bashrc` を自動では変更しません" in readme
 
 
 def submit_dependencies(
