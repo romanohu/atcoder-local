@@ -9,11 +9,12 @@ from typing import Any, Callable
 
 if __package__:
     from . import push_guard
-else:  # Direct execution from tools/acc-wrapper.zsh.
+else:  # Direct execution from the shell wrappers.
     import push_guard
 
 
 COMMANDS_FOR_NEW = {"new", "n"}
+CUSTOM_COMMANDS = {"build", "run", "test", "submit", "doctor"}
 INSTALL_COMMAND = "uv run python tools/push_guard.py install"
 OPTIONS_WITH_VALUE = {
     "-c",
@@ -196,10 +197,20 @@ def main(
     *,
     cwd: Path | None = None,
     acc_runner: Callable[[list[str]], int] | None = None,
+    workflow_runner: Callable[[list[str], Path], int] | None = None,
     operations: WrapperOperations | None = None,
 ) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     working_directory = Path.cwd() if cwd is None else cwd
+    if args and args[0] in CUSTOM_COMMANDS:
+        if workflow_runner is not None:
+            return workflow_runner(args, working_directory)
+        if __package__:
+            from .atcoder_workflow.cli import main as workflow_main
+        else:
+            from atcoder_workflow.cli import main as workflow_main
+        return workflow_main(args, cwd=working_directory)
+
     contest_id = extract_contest_id(args)
     state_path: Path | None = None
     active_operations = operations

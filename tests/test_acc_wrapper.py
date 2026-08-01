@@ -4,6 +4,7 @@ import os
 from contextlib import redirect_stderr
 from io import StringIO
 import inspect
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -104,10 +105,12 @@ class TestAccWrapperMainCharacterization(unittest.TestCase):
         )
 
         with patch("tools.acc_wrapper.subprocess.run", return_value=completed) as run:
-            result = main(["submit", "a"], operations=operations)
+            result = main(["config", "default-task-choice"], operations=operations)
 
         self.assertEqual(result, 23)
-        run.assert_called_once_with(["acc", "submit", "a"], check=False)
+        run.assert_called_once_with(
+            ["acc", "config", "default-task-choice"], check=False
+        )
         preflight.assert_not_called()
         create_memo.assert_not_called()
         register_contest.assert_not_called()
@@ -163,7 +166,57 @@ class TestAccWrapperMain(unittest.TestCase):
 
         self.assertIn("cwd", parameters)
         self.assertIn("acc_runner", parameters)
+        self.assertIn("workflow_runner", parameters)
         self.assertIn("operations", parameters)
+
+    def test_custom_command_bypasses_native_acc(self) -> None:
+        native_calls: list[list[str]] = []
+        workflow_calls: list[tuple[list[str], Path]] = []
+        root = Path("/repo")
+
+        result = acc_wrapper.main(
+            ["test", "--debug"],
+            cwd=root,
+            acc_runner=lambda args: native_calls.append(args) or 0,
+            workflow_runner=lambda args, cwd: workflow_calls.append((args, cwd))
+            or 0,
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(native_calls, [])
+        self.assertEqual(workflow_calls, [(["test", "--debug"], root)])
+
+    def test_only_the_five_local_commands_use_workflow_dispatch(self) -> None:
+        for command in ("build", "run", "test", "submit", "doctor"):
+            with self.subTest(command=command):
+                native_calls: list[list[str]] = []
+                workflow_calls: list[list[str]] = []
+                result = main(
+                    [command],
+                    cwd=Path("/repo"),
+                    acc_runner=lambda args: native_calls.append(args) or 19,
+                    workflow_runner=lambda args, cwd: workflow_calls.append(args)
+                    or 7,
+                )
+
+                self.assertEqual(result, 7)
+                self.assertEqual(native_calls, [])
+                self.assertEqual(workflow_calls, [[command]])
+
+    def test_config_delegates_without_calling_workflow(self) -> None:
+        native_calls: list[list[str]] = []
+        workflow_calls: list[list[str]] = []
+
+        result = main(
+            ["config", "default-task-choice"],
+            cwd=Path("/repo"),
+            acc_runner=lambda args: native_calls.append(args) or 29,
+            workflow_runner=lambda args, cwd: workflow_calls.append(args) or 0,
+        )
+
+        self.assertEqual(result, 29)
+        self.assertEqual(native_calls, [["config", "default-task-choice"]])
+        self.assertEqual(workflow_calls, [])
 
     def test_new_calls_preflight_acc_memo_and_registration_in_order(self) -> None:
         events: list[object] = []
@@ -186,6 +239,8 @@ class TestAccWrapperMain(unittest.TestCase):
             ["n", "--template", "cpp", "abc454"],
             cwd=cwd,
             acc_runner=lambda args: events.append(("acc", args)) or 0,
+            workflow_runner=lambda args, cwd: events.append(("workflow", args, cwd))
+            or 0,
             operations=operations,
         )
 
@@ -487,13 +542,17 @@ class TestAccWrapperMain(unittest.TestCase):
         script_path = Path(__file__).parents[1] / "tools" / "acc_wrapper.py"
         with tempfile.TemporaryDirectory() as tmpdir:
             fake_acc = Path(tmpdir) / "acc"
-            fake_acc.write_text("#!/bin/sh\nexit 17\n", encoding="utf-8")
+            fake_acc.write_text(
+                "#!/bin/sh\nprintf 'native-out\\n'\n"
+                "printf 'native-err\\n' >&2\nexit 17\n",
+                encoding="utf-8",
+            )
             fake_acc.chmod(0o755)
             environment = dict(os.environ)
             environment["PATH"] = f"{tmpdir}{os.pathsep}{environment['PATH']}"
 
             completed = subprocess.run(
-                [sys.executable, str(script_path), "--version"],
+                [sys.executable, str(script_path), "config", "default-task-choice"],
                 cwd=tmpdir,
                 env=environment,
                 check=False,
@@ -502,7 +561,56 @@ class TestAccWrapperMain(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 17)
-        self.assertEqual(completed.stderr, "")
+        self.assertEqual(completed.stdout, "native-out\n")
+        self.assertEqual(completed.stderr, "native-err\n")
+
+
+class TestShellWrappers(unittest.TestCase):
+    def test_bash_and_zsh_wrappers_dispatch_with_current_marker(self) -> None:
+        root = Path(__file__).parents[1]
+        cases = [
+            ("bash", ["bash", "--noprofile", "--norc", "-c"]),
+            ("zsh", ["zsh", "-f", "-c"]),
+        ]
+
+        for name, shell in cases:
+            with self.subTest(shell=name), tempfile.TemporaryDirectory() as tmpdir:
+                temp = Path(tmpdir)
+                fake_uv = temp / "uv"
+                fake_uv.write_text(
+                    "#!/bin/sh\n"
+                    "printf 'marker=%s\\n' \"$ATCODER_LOCAL_WRAPPER\"\n"
+                    "for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n"
+                    "exit 37\n",
+                    encoding="utf-8",
+                )
+                fake_uv.chmod(0o755)
+                wrapper = root / "tools" / f"acc-wrapper.{name}"
+                command = f"source {shlex.quote(str(wrapper))}; acc test --debug"
+                environment = dict(os.environ)
+                environment["PATH"] = f"{temp}{os.pathsep}{environment['PATH']}"
+
+                completed = subprocess.run(
+                    [*shell, command],
+                    cwd=root,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+                self.assertEqual(completed.returncode, 37)
+                self.assertEqual(
+                    completed.stdout.splitlines(),
+                    [
+                        "marker=1",
+                        "arg=run",
+                        "arg=python",
+                        f"arg={root / 'tools' / 'acc_wrapper.py'}",
+                        "arg=test",
+                        "arg=--debug",
+                    ],
+                )
 
 
 if __name__ == "__main__":

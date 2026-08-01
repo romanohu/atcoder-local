@@ -2,13 +2,36 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from . import WorkflowError
-from .compiler import BuildMode, detect_compiler
+from .compiler import BuildMode, CompilerFamily, detect_compiler
 from .context import TaskContext
 from .cpp import bundle_cpp, compile_cpp, run_binary, run_samples
 from .runner import ProcessRunner
+
+try:
+    from .. import push_guard
+except ImportError:  # Direct execution through tools/acc_wrapper.py.
+    import push_guard
+
+
+ACL_VERSION = "v1.6"
+ACL_COMMIT = "864245a00b00dd008d1abfdc239618fdb7d139da"
+
+
+class CheckStatus(Enum):
+    OK = "ok"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    name: str
+    status: CheckStatus
+    message: str
 
 
 @dataclass(frozen=True)
@@ -18,6 +41,125 @@ class WorkflowDependencies:
     which: Callable[[str], str | None]
     input_fn: Callable[[str], str]
     stdin_isatty: Callable[[], bool]
+    guard_is_installed: Callable[[Path], bool] | None = None
+
+
+def collect_doctor_checks(
+    root: Path | str, dependencies: WorkflowDependencies
+) -> list[DoctorCheck]:
+    repository_root = Path(root)
+    checks = [
+        _executable_check("uv", "uv", dependencies),
+        _executable_check("atcoder-cli", "acc", dependencies),
+        _executable_check("oj", "oj", dependencies),
+        _executable_check("oj-bundle", "oj-bundle", dependencies),
+        _compiler_check(dependencies),
+        _acl_check(repository_root),
+        _push_guard_check(repository_root, dependencies),
+        _shell_wrapper_check(repository_root, dependencies),
+    ]
+    return checks
+
+
+def run_doctor(root: Path | str, dependencies: WorkflowDependencies) -> int:
+    checks = collect_doctor_checks(root, dependencies)
+    for check in checks:
+        print(f"[{check.status.value}] {check.name}: {check.message}")
+    if any(check.status is CheckStatus.ERROR for check in checks):
+        return 1
+    return 0
+
+
+def _executable_check(
+    name: str, executable: str, dependencies: WorkflowDependencies
+) -> DoctorCheck:
+    path = dependencies.which(executable)
+    if path is None:
+        return DoctorCheck(name, CheckStatus.ERROR, f"{executable} was not found")
+    return DoctorCheck(name, CheckStatus.OK, path)
+
+
+def _compiler_check(dependencies: WorkflowDependencies) -> DoctorCheck:
+    try:
+        compiler = detect_compiler(
+            dependencies.environ, dependencies.runner, dependencies.which
+        )
+    except WorkflowError as error:
+        return DoctorCheck("compiler", CheckStatus.ERROR, str(error))
+
+    description = f"{compiler.executable} ({compiler.family.value} {compiler.major})"
+    if compiler.family is CompilerFamily.GCC and compiler.major == 15:
+        return DoctorCheck("compiler", CheckStatus.OK, description)
+    return DoctorCheck(
+        "compiler",
+        CheckStatus.WARNING,
+        f"{description}; GCC 15 is recommended",
+    )
+
+
+def _acl_check(root: Path) -> DoctorCheck:
+    acl_directory = root / "library" / "atcoder"
+    metadata_path = acl_directory / "VERSION"
+    try:
+        metadata = metadata_path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        return DoctorCheck(
+            "acl", CheckStatus.ERROR, f"cannot read {metadata_path}: {error}"
+        )
+
+    expected_metadata = [ACL_VERSION, ACL_COMMIT]
+    if metadata != expected_metadata:
+        return DoctorCheck(
+            "acl", CheckStatus.ERROR, f"invalid metadata in {metadata_path}"
+        )
+
+    required_paths = [
+        acl_directory / "LICENSE",
+        acl_directory / "all",
+        root / "library" / "atcoder_local" / "core.hpp",
+        root / "library" / "atcoder_local" / "io.hpp",
+        root / "library" / "atcoder_local" / "debug.hpp",
+    ]
+    missing = [str(path) for path in required_paths if not path.is_file()]
+    if missing:
+        return DoctorCheck(
+            "acl", CheckStatus.ERROR, f"required file is missing: {missing[0]}"
+        )
+    return DoctorCheck("acl", CheckStatus.OK, f"ACL {ACL_VERSION} and local headers")
+
+
+def _push_guard_check(
+    root: Path, dependencies: WorkflowDependencies
+) -> DoctorCheck:
+    checker = dependencies.guard_is_installed or push_guard.guard_is_installed
+    try:
+        installed = checker(root)
+    except Exception as error:
+        return DoctorCheck("push-guard", CheckStatus.ERROR, str(error))
+    if not installed:
+        return DoctorCheck("push-guard", CheckStatus.ERROR, "not installed")
+    return DoctorCheck("push-guard", CheckStatus.OK, "installed")
+
+
+def _shell_wrapper_check(
+    root: Path, dependencies: WorkflowDependencies
+) -> DoctorCheck:
+    wrappers = [
+        root / "tools" / "acc-wrapper.bash",
+        root / "tools" / "acc-wrapper.zsh",
+    ]
+    missing = [str(path) for path in wrappers if not path.is_file()]
+    if missing:
+        return DoctorCheck(
+            "shell-wrapper", CheckStatus.ERROR, f"wrapper is missing: {missing[0]}"
+        )
+    if dependencies.environ.get("ATCODER_LOCAL_WRAPPER") != "1":
+        return DoctorCheck(
+            "shell-wrapper",
+            CheckStatus.ERROR,
+            "current shell is not using the repository wrapper",
+        )
+    return DoctorCheck("shell-wrapper", CheckStatus.OK, "bash/zsh wrapper active")
 
 
 def run_build(
