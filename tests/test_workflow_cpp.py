@@ -194,6 +194,45 @@ def test_successful_bundle_atomically_replaces_output(tmp_path: Path) -> None:
     ]
 
 
+def test_bundle_rejects_unbundled_local_include_and_preserves_old_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output = tmp_path / ".atcoder-local/build/abc999/a/bundled.cpp"
+    output.parent.mkdir(parents=True)
+    output.write_text("old bundle", encoding="utf-8")
+    temporary = output.with_name(".bundled.cpp.tmp")
+    temporary.write_text("stale temporary", encoding="utf-8")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            '#line 1 "main.cpp"\n#include <atcoder_local/core.hpp>\nint main() {}\n',
+            "",
+        )
+
+    with pytest.raises(WorkflowError, match="unbundled local include.*use quotes"):
+        bundle_cpp(
+            source_path=source,
+            output_path=output,
+            working_dir=tmp_path,
+            library_dir=tmp_path / "library",
+            runner=runner,
+        )
+
+    assert output.read_text(encoding="utf-8") == "old bundle"
+    assert not temporary.exists()
+
+
 @pytest.mark.parametrize("operation", ["compile", "bundle"])
 def test_spawn_oserror_is_normalized_and_cleans_temporary(
     tmp_path: Path, operation: str

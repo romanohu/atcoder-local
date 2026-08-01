@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import re
 import shlex
 
 from . import WorkflowError
 from .compiler import BuildMode, CompilerInfo, compiler_flags
 from .runner import ProcessRunner
+
+
+UNBUNDLED_LOCAL_INCLUDE = re.compile(
+    r"^\s*#\s*include\s*<atcoder_local/[^>]+>\s*$", re.MULTILINE
+)
 
 
 def compile_cpp(
@@ -64,6 +70,7 @@ def bundle_cpp(
         )
         if result.returncode != 0:
             raise WorkflowError(f"bundle failed for {source_path}")
+        _reject_unbundled_local_includes(result.stdout, source_path)
         temporary.write_text(result.stdout, encoding="utf-8")
         temporary.replace(output_path)
     except OSError as error:
@@ -71,6 +78,15 @@ def bundle_cpp(
     finally:
         _discard_temporary(temporary)
     return output_path
+
+
+def _reject_unbundled_local_includes(source: str, source_path: Path) -> None:
+    if UNBUNDLED_LOCAL_INCLUDE.search(source):
+        raise WorkflowError(
+            f"bundle left an unbundled local include in {source_path}; "
+            "use quotes for atcoder_local headers, for example "
+            '#include "atcoder_local/core.hpp"'
+        )
 
 
 def _discard_temporary(temporary: Path) -> None:

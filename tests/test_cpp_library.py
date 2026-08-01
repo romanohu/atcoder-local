@@ -12,6 +12,17 @@ import unittest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_cpp_template_quotes_repository_local_headers() -> None:
+    template = (REPOSITORY_ROOT / "template/cpp/main.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    assert '#include "atcoder_local/core.hpp"' in template
+    assert '#include "atcoder_local/debug.hpp"' in template
+    assert '#include "atcoder_local/io.hpp"' in template
+    assert "#include <atcoder_local/" not in template
+
+
 class TestCppLibrary(unittest.TestCase):
     def compiler(self) -> str:
         compiler = shutil.which("g++") or shutil.which("clang++")
@@ -85,7 +96,7 @@ class TestCppLibrary(unittest.TestCase):
         """
         self.assertEqual(self.compile_and_run(source), "")
 
-    def test_bundled_submission_is_self_contained(self) -> None:
+    def test_bundled_submission_inlines_repository_local_headers(self) -> None:
         bundler = shutil.which("oj-bundle")
         if bundler is None:
             self.skipTest("oj-bundle is not installed")
@@ -100,7 +111,7 @@ class TestCppLibrary(unittest.TestCase):
                 textwrap.dedent(
                     """
                     #include <atcoder/dsu>
-                    #include <atcoder_local/core.hpp>
+                    #include "atcoder_local/core.hpp"
                     #include <iostream>
                     int main() {
                         atcoder::dsu graph(2);
@@ -126,11 +137,15 @@ class TestCppLibrary(unittest.TestCase):
                 env={**os.environ, "CXX": compiler},
             )
             self.assertEqual(bundled.returncode, 0, bundled.stderr)
+            self.assertNotIn("#include <atcoder_local/", bundled.stdout)
+            self.assertNotIn('#include "atcoder_local/', bundled.stdout)
             submission_path.write_text(bundled.stdout, encoding="utf-8")
             subprocess.run(
                 [
                     compiler,
                     "-std=gnu++23",
+                    "-I",
+                    str(REPOSITORY_ROOT / "library"),
                     str(submission_path),
                     "-o",
                     str(executable_path),
