@@ -26,6 +26,8 @@ from tools.atcoder_workflow.compiler import (
 from tools.atcoder_workflow.context import TaskContext
 
 
+ROOT = Path(__file__).parents[1]
+
 GCC15 = CompilerInfo(
     executable="/opt/g++-15",
     family=CompilerFamily.GCC,
@@ -63,6 +65,27 @@ DEPENDENCIES = WorkflowDependencies(
     input_fn=lambda prompt: prompt,
     stdin_isatty=lambda: True,
 )
+
+
+def test_readme_documents_complete_workflow() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    required = [
+        "uv sync --group dev",
+        "tools/acc-wrapper.zsh",
+        "tools/acc-wrapper.bash",
+        "acc doctor",
+        "acc build",
+        "acc run",
+        "acc test",
+        "acc test --debug",
+        "acc submit",
+        "acc test -c abc123 -t a",
+        "CAPTCHA",
+        "Rated",
+        "--no-verify",
+    ]
+    for fragment in required:
+        assert fragment in readme
 
 
 def submit_dependencies(

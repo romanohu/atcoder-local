@@ -1,21 +1,37 @@
-# AtCoder環境構築
-## 使用しているツール
-- [atcoder-cli](https://github.com/Tatamo/atcoder-cli)
-- [online-judge-tools](https://github.com/online-judge-tools/oj)
-- [aclogin](https://github.com/key-moon/aclogin)
+# AtCoder ローカル開発環境
 
-## セットアップ
-クローン
+## 概要
+
+このリポジトリは、AtCoder の C++ 解答をローカルで作成、ビルド、実行、サンプルテスト、提出するための環境です。`atcoder-cli` の `acc` コマンドをシェルラッパーで拡張し、コンテスト作成時の `memo.md` 生成とコンテスト中の push 防止も行います。
+
+## 必要なもの
+
+- Git
+- [uv](https://docs.astral.sh/uv/)
+- Node.js と npm（`atcoder-cli` のインストールに使用）
+- C++23 に対応した C++ コンパイラ
+- bash または zsh
+- AtCoder アカウント
+
+GNU GCC 15 を推奨します。別の C++23 対応コンパイラもビルドには使用できますが、`acc doctor` は警告を表示します。環境に GNU GCC が存在するかは `acc doctor` とコンパイラの `--version` で確認してください。
+
+## `uv sync` と atcoder-cli のインストール
+
+リポジトリをクローンし、リポジトリルートで依存関係をインストールします。
+
 ```sh
 git clone <url>
-```
-
-ツールのインストール
-```sh
-uv sync
+cd atcoder-local
+uv sync --group dev
 npm install -g atcoder-cli
 ```
-atcoder-cliの設定
+
+`uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。
+
+## atcoder-cli の設定
+
+リポジトリルートで次を実行します。テンプレートの設定値には、このクローンの絶対パスが保存されます。
+
 ```sh
 acc check-oj
 acc config default-task-choice all
@@ -23,75 +39,140 @@ acc config default-template "$(pwd)/template/cpp"
 acc config default-contest-dirname-format 'contests/{ContestID}'
 acc config default-test-dirname-format test
 ```
-aclogin
-1. ブラウザからAtCoderにログイン
-2. 開発者モード(F12)を開きApplication→cookies→https://atcoder.jp と辿る
-3. 表の中の**REVEL_SESSION**という項目のValueをコピー
-4. terminalで```aclogin```→コピーしたものをそのままペースト
 
-## コンテスト中のpush防止
-
-### 初回設定
-
-リポジトリのルートで次を実行します。
+AtCoder へのログイン情報は `aclogin` で設定します。ブラウザで AtCoder にログインし、開発者ツールの Cookie 一覧から `REVEL_SESSION` の値を確認して、次のコマンドの入力欄へ貼り付けます。Cookie は秘密情報として扱い、ファイルやシェル履歴へ保存しないでください。
 
 ```sh
-uv run python tools/push_guard.py install
+uv run aclogin
+```
+
+## bash / zsh ラッパーの有効化
+
+使用するシェルに合わせて、リポジトリルートでどちらか一方を実行します。
+
+zsh:
+
+```sh
 source "$(pwd)/tools/acc-wrapper.zsh"
 ```
 
-`install` はクローンごとに一度だけ必要です。現在有効な `core.hooksPath` が別の場所を向いている場合はエラーになり、既存の設定は書き換えません。
+bash:
 
-`tools/acc-wrapper.zsh` はzsh用です。`source` はzshのセッションごとに実行します。常に有効にする場合は、リポジトリの絶対パスを指定した `source` 行を `~/.zshrc` に追加してください。このラッパーを通さない `acc new` では、コンテスト時刻を自動登録できません。
+```sh
+source "$(pwd)/tools/acc-wrapper.bash"
+```
 
-### 動作
+ラッパーは現在のシェルセッションだけで有効です。常時使用する場合は、対応する `source` 行を `~/.zshrc` または `~/.bashrc` に追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。ラッパーを通さない `acc new` は、push-guard へのコンテスト登録と `memo.md` の生成を行いません。
 
-`acc new abc467` が成功すると、ラッパーがAtCoderの公式ページから開始時刻と終了時刻を取得し、Gitの管理領域に保存します。`pre-push` フックは保存済みの時刻だけを読み、ネットワークには接続しません。
+## push-guard のインストール
 
-登録したコンテストの期間 `[start_at, end_at)` は、リモートやブランチにかかわらずpushを止めます。開始時刻より前と、終了時刻ちょうどまたはそれ以降は自動でpushできるようになります。複数のコンテストを登録した場合は、開催中または終了時刻を確定できていないものが1件でもあればpushを止めます。
+クローンごとに一度、リポジトリルートで次を実行します。
 
-### 取得失敗と復旧
+```sh
+uv run python tools/push_guard.py install
+```
 
-公式時刻の取得や解析に失敗すると、ラッパーは入力を求める前に、現在時刻から有効になる未解決のロックを保存します。対話端末ではJSTの終了時刻を一度だけ入力できます。入力が不正な場合、入力を中断した場合、非対話実行の場合は未解決のまま残り、pushも引き続き止まります。
+このコマンドはリポジトリ用の `pre-push` フックを設定します。既存の `core.hooksPath` が別の場所を指している場合は失敗し、既存設定を上書きしません。その場合は、既存フックとの統合方針を確認してから対応してください。
 
-状態の確認と復旧には次のコマンドを使います。
+インストール状態と登録済みロックは、変更を加えない `status` で確認できます。
 
 ```sh
 uv run python tools/push_guard.py status
-uv run python tools/push_guard.py set-end abc467 "2026-07-18 22:40"
-uv run python tools/push_guard.py recover-state abc467 "2026-07-18 22:40"
 ```
 
-`status` は、フックがインストール済みかどうかと、登録した各コンテストの状態（`upcoming`、`active`、`expired`、`unresolved`）を表示します。
+## `acc doctor`
 
-`set-end` は、登録済みで終了時刻が未解決のコンテストにだけ使えます。指定する時刻は未来のJSTです。
+ラッパーを有効にして push-guard をインストールした後、リポジトリ内で診断を実行します。
 
-`recover-state` は、状態ファイルが壊れて読み込めない場合にだけ使えます。状態ファイルが壊れている間もpushは止まります。復旧時は壊れたファイルを時刻付きの別ファイルへバックアップしてから、現在時刻から指定した終了時刻まで有効なロックで置き換えます。
-
-### 対象と限界
-
-`pre-push` フックを実行する通常のGit pushとIDEからのpushが対象です。IDEがGitフックを実行しない場合、そのpushは対象外です。リモート名やブランチ名による除外はありません。
-
-`git push --no-verify`、`core.hooksPath`やフックの削除、`.git`内の状態ファイルの編集では回避できます。ローカルの設定を意図的に変更する操作までは防ぎません。
-
-## `memo.md` の自動生成
-
-上記のラッパーには、コンテスト時刻の登録に加えて `memo.md` を作る処理も含まれています。有効化後に `acc new abc454` を実行すると、`contests/<contest-id>/memo.md` に次の形式でテンプレートが作成されます。
-
-```md
-# abc454
-
-## a
-
-## b
-...
+```sh
+acc doctor
 ```
 
----
-> acc submitについて
-使用できないらしい(厳密にはコンテスト開催時にだけ使用できる?)
+`acc doctor` は `uv`、`atcoder-cli`、`oj`、`oj-bundle`、C++23 コンパイラ、同梱 ACL とローカルヘッダー、push-guard、現在のシェルのラッパー有効化を順に確認します。`[error]` があれば終了コード 1、GCC 15 以外の利用など `[warning]` だけであれば終了コード 0 です。
 
----
-**参考にした記事**
-- [AtCoderで快適に戦うための環境を作ろう(note)](https://note.com/dev_onecareer/n/n673b1e040956)
-- [AtCoder CLIにおいてログインできないときの対処法(qiita)](https://qiita.com/namonaki/items/16cda635dd7c34496aaa)
+## コンテストの作成
+
+リポジトリルートで、コンテスト ID を指定します。
+
+```sh
+acc new abc123
+```
+
+`atcoder-cli` による作成が成功すると、ラッパーは `contests/abc123/memo.md` を生成し、公式コンテストページから取得した開始・終了時刻を push-guard に登録します。push-guard が未インストールの場合、`acc new` はコンテストを作成する前に停止します。
+
+時刻を取得できない場合は、現在時刻から有効な `unresolved` ロックを先に保存します。対話端末では JST の終了時刻を一度入力できます。入力できない、入力を中断した、または値が不正な場合はロックが未解決のまま残り、push は停止されます。
+
+## ビルド、実行、テスト、デバッグ、提出
+
+通常は `contest.acc.json` に登録されたタスクディレクトリ、たとえば `contests/abc123/a` で実行します。
+
+```sh
+acc build
+acc run
+acc test
+acc test --debug
+acc submit
+```
+
+- `acc build` は C++23 のリリース設定で `main.cpp` をビルドします。
+- `acc run` はリリースビルド後にプログラムを実行します。
+- `acc test` はリリースビルド後に `oj test` でサンプルを実行します。
+- `acc test --debug` は `LOCAL`、AddressSanitizer、UndefinedBehaviorSanitizer を有効にしたデバッグビルドでサンプルを実行します。
+- `acc submit` はソースを `oj-bundle` で単一ファイル化し、そのファイルを再コンパイルしてサンプルテストを通した後にだけ確認を表示します。
+
+`acc submit` は対話端末専用です。確認は既定で No であり、`y` または `yes` を明示的に入力した場合だけ `atcoder-cli` へ提出を渡します。空入力、その他の入力、確認の中断では提出しません。
+
+ビルド生成物と提出用の一時ファイルは `.atcoder-local/` 配下に置かれ、Git の管理対象にはなりません。
+
+## リポジトリルートからの `-c` / `-t` 指定
+
+リポジトリルートなどタスクディレクトリ以外から実行する場合は、コンテスト ID とタスクラベルを両方指定します。片方だけの指定はエラーです。タスクラベルは大文字・小文字を区別しません。
+
+```sh
+acc build -c abc123 -t a
+acc run -c abc123 -t a
+acc test -c abc123 -t a
+acc test --debug -c abc123 -t a
+acc submit -c abc123 -t a
+```
+
+## CAPTCHA による提出制限
+
+AtCoder はソースコード提出に CAPTCHA を導入しています。公式告知では、開催中の ABC、ARC、AGC、AHC などの Rated コンテストは CAPTCHA なしで提出できる扱いですが、この仕様は将来にわたって保証されていません。開催中の対象コンテスト以外など、AtCoder がその時点で CLI 提出を許可する条件から外れる場合、非公式ツールである `atcoder-cli` の提出は失敗することがあります。最新情報は [AtCoder の公式告知](https://atcoder.jp/posts/1456?lang=ja) を確認してください。
+
+このリポジトリの `acc submit` は、提出失敗時にブラウザを開きません。提出 URL の表示、URL やソースのクリップボードへのコピー、Web 提出などの代替経路への切り替えも行いません。失敗時はエラーをそのまま返すため、提出済みと判断せず AtCoder 上の提出一覧を確認してください。
+
+## push-guard の復旧と回避手段の限界
+
+登録状態は次のコマンドで確認します。
+
+```sh
+uv run python tools/push_guard.py status
+```
+
+`status` はフックのインストール状態と、各ロックの `upcoming`、`active`、`expired`、`unresolved` を表示する読み取り専用操作です。
+
+公式時刻を取得できず終了時刻が未解決になったロックには、未来の JST 終了時刻を設定します。
+
+```sh
+uv run python tools/push_guard.py set-end abc123 "2026-08-01 22:40"
+```
+
+状態ファイルが壊れて読み込めない場合だけ、次のコマンドで復旧します。壊れたファイルは時刻付きの別ファイルへバックアップされ、現在時刻から指定時刻まで有効なロックへ置き換えられます。
+
+```sh
+uv run python tools/push_guard.py recover-state abc123 "2026-08-01 22:40"
+```
+
+フックは登録済みの期間 `[start_at, end_at)` における通常の `git push` を、リモート名やブランチ名にかかわらず停止します。複数ロックのうち、開催中または未解決のものが一件でもあれば停止します。フックは保存済み時刻だけを使用し、push 時にネットワークへ接続しません。
+
+これはローカルフックによる安全策であり、強制的なアクセス制御ではありません。`git push --no-verify` はクライアント側の `pre-push` フックを実行しないため、この保護も回避しますが、リモート側の認証、権限、ブランチ保護を回避するものではありません。`--no-verify` は復旧手段ではないため、コンテスト中の push に使用しないでください。`core.hooksPath` やフックの削除、`.git` 内の状態ファイルの直接編集、Git フックを実行しない IDE からの push も保護対象外です。
+
+## トラブルシューティング
+
+- `acc doctor` が `current shell is not using the repository wrapper` と表示する場合は、使用中のシェルに対応する `tools/acc-wrapper.zsh` または `tools/acc-wrapper.bash` をもう一度 `source` してください。
+- `acc doctor` が `push-guard: not installed` と表示する場合は、リポジトリルートで `uv run python tools/push_guard.py install` を実行してください。
+- `no C++23 compiler found` の場合は C++23 対応コンパイラをインストールし、必要ならその実行ファイルを `CXX` に指定してから再診断してください。コンパイラが未導入の環境で GNU GCC が利用できるとは仮定しないでください。
+- `oj-bundle` が GNU C++ コンパイラを要求して失敗する場合は、GNU GCC の導入状況と `CXX` を確認してください。提出前の bundle と再コンパイルを省略しないでください。
+- リポジトリルートで `acc build` などがタスクを特定できない場合は、`-c` と `-t` を両方指定してください。
+- 提出コマンドが失敗した場合は、サンプル失敗、非対話端末、確認入力、ログイン状態、CAPTCHA の条件、AtCoder 側の提出履歴を順に確認してください。このラッパーは自動的な代替提出を行いません。
