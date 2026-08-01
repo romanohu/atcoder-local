@@ -8,6 +8,17 @@ Move submission artifact preparation and verification from `acc submit` to
 
 ## Command Behavior
 
+### Bundle compatibility
+
+`oj-bundle` 5.6.0 only expands quoted includes. The C++ template therefore
+uses quoted includes for repository-only `atcoder_local` headers. Standard
+AtCoder Library includes may remain angle-bracket includes because AtCoder
+provides ACL in the judge environment.
+
+After bundling, the workflow rejects any remaining angle-bracket
+`atcoder_local` include with a clear error instead of publishing an artifact
+that only compiles while the repository's `library/` directory is present.
+
 ### `acc test`
 
 Both `acc test` and `acc test --debug` perform these stages in order:
@@ -86,6 +97,8 @@ side effects and reports missing, stale, and timestamp-access errors as
 - Unsupported non-C++ sources fail before compiler detection or bundling.
 - Compiler detection failure leaves no verified artifact.
 - Bundle failure stops compilation and sample execution.
+- A residual angle-bracket `atcoder_local` include is a bundle failure and
+  tells the user to use a quoted include.
 - Compile failure stops sample execution and leaves no verified artifact.
 - Sample failure returns the `oj test` exit code and leaves no verified
   artifact.

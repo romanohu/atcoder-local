@@ -11,6 +11,9 @@
 ## Global Constraints
 
 - Both `acc test` and `acc test --debug` must generate and test a bundled submission candidate.
+- The C++ template must quote repository-only `atcoder_local` includes so `oj-bundle` 5.6.0 expands them.
+- Bundling must reject any residual angle-bracket `atcoder_local` include instead of publishing a repository-dependent artifact.
+- Standard AtCoder Library angle-bracket includes remain supported because AtCoder provides ACL in the judge environment.
 - Publish `.atcoder-local/build/<contest>/<task>/submission.cpp` only after all samples pass.
 - A failed test stage must leave no published or pending submission artifact.
 - Release tests use `submission-main`; debug tests use `submission-main-debug` with the existing debug flags.
@@ -29,6 +32,113 @@
 - `tools/atcoder_workflow/commands.py`: orchestrates the new test pipeline, manages pending/published artifact paths, validates freshness, and simplifies submission.
 - `tests/test_workflow_commands.py`: specifies release/debug test pipelines, failure cleanup, freshness behavior, and submission boundaries.
 - `README.md`: documents the new ownership split between `acc test` and `acc submit`.
+
+### Task 0: Make repository-local header bundling reliable
+
+**Files:**
+- Modify: `template/cpp/main.cpp:4-6`
+- Modify: `tools/atcoder_workflow/cpp.py:42-72`
+- Test: `tests/test_workflow_cpp.py:115-175`
+- Test: `tests/test_cpp_library.py:82-145`
+
+**Interfaces:**
+- Consumes: `oj-bundle` output captured by `bundle_cpp`.
+- Produces: quoted `atcoder_local` template includes; private `_reject_unbundled_local_includes(source: str, source_path: Path) -> None` called before writing the bundled artifact.
+
+- [ ] **Step 1: Write failing tests for quoted template includes and residual local-header rejection**
+
+Add a template contract test:
+
+```python
+def test_cpp_template_quotes_repository_local_headers() -> None:
+    template = (REPOSITORY_ROOT / "template/cpp/main.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    assert '#include "atcoder_local/core.hpp"' in template
+    assert '#include "atcoder_local/debug.hpp"' in template
+    assert '#include "atcoder_local/io.hpp"' in template
+    assert "#include <atcoder_local/" not in template
+```
+
+Add a `bundle_cpp` boundary test whose fake runner returns:
+
+```python
+'#line 1 "main.cpp"\n#include <atcoder_local/core.hpp>\nint main() {}\n'
+```
+
+Assert that `bundle_cpp` raises
+`WorkflowError` matching `unbundled local include.*use quotes`, preserves an
+existing output file, and removes its temporary file.
+
+- [ ] **Step 2: Run the focused tests and verify RED**
+
+Run:
+
+```sh
+uv run python -m pytest \
+  tests/test_workflow_cpp.py \
+  tests/test_cpp_library.py \
+  -k 'unbundled_local_include or template_quotes' \
+  -v
+```
+
+Expected: FAIL because the template uses angle brackets and `bundle_cpp`
+accepts residual local includes.
+
+- [ ] **Step 3: Implement the minimal template and bundle validation changes**
+
+Change only the three `atcoder_local` lines in `template/cpp/main.cpp` to
+quoted includes. In `cpp.py`, validate `result.stdout` after a successful
+`oj-bundle` exit and before `temporary.write_text`:
+
+```python
+UNBUNDLED_LOCAL_INCLUDE = re.compile(
+    r'^\s*#\s*include\s*<atcoder_local/[^>]+>\s*$', re.MULTILINE
+)
+
+
+def _reject_unbundled_local_includes(source: str, source_path: Path) -> None:
+    if UNBUNDLED_LOCAL_INCLUDE.search(source):
+        raise WorkflowError(
+            f"bundle left an unbundled local include in {source_path}; "
+            'use quotes for atcoder_local headers, for example '
+            '#include "atcoder_local/core.hpp"'
+        )
+```
+
+Import `re`. Let the existing `finally` cleanup preserve the old output and
+remove the temporary file.
+
+- [ ] **Step 4: Run the focused tests and verify GREEN**
+
+Run the Step 2 command again. Expected: PASS.
+
+- [ ] **Step 5: Correct the integration test to reflect the supported judge boundary**
+
+Rename `test_bundled_submission_is_self_contained` to
+`test_bundled_submission_inlines_repository_local_headers`. Change its
+`atcoder_local/core.hpp` include to quotes, keep `<atcoder/dsu>` as the
+standard AtCoder-provided ACL include, assert the bundled source does not
+contain `#include <atcoder_local/` or `#include "atcoder_local/`, and compile
+with `-I <repository>/library` so the local test environment supplies ACL.
+
+- [ ] **Step 6: Run the baseline suite and verify the pre-existing failure is resolved**
+
+Run:
+
+```sh
+uv run python -m pytest -q
+```
+
+Expected: 257 tests pass with 93 subtests and no failures.
+
+- [ ] **Step 7: Commit Task 0**
+
+```sh
+git add template/cpp/main.cpp tools/atcoder_workflow/cpp.py tests/test_workflow_cpp.py tests/test_cpp_library.py
+git commit -m "fix: bundle repository-local headers"
+```
 
 ### Task 1: Move bundling and artifact publication into `acc test`
 
