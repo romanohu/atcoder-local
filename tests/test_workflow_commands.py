@@ -138,6 +138,82 @@ def test_submit_rejects_missing_library_before_prompt(tmp_path: Path) -> None:
     assert events == []
 
 
+def test_submit_rejects_unreadable_library_input_before_prompt(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+    submission = context.build_dir / "submission.cpp"
+    submission.parent.mkdir(parents=True, exist_ok=True)
+    unreadable = context.repository_root / "library/atcoder_local/unreadable.hpp"
+    set_mtime(context.source_path, 100)
+    set_mtime(context.repository_root / "library/atcoder_local/core.hpp", 100)
+    set_mtime(unreadable, 100)
+    set_mtime(submission, 200)
+    original_stat = Path.stat
+    original_is_file = Path.is_file
+
+    def fail_unreadable_stat(path: Path, *args: object, **kwargs: object):
+        if path == unreadable:
+            raise OSError("cannot stat library input")
+        return original_stat(path, *args, **kwargs)
+
+    def suppress_unreadable_is_file(path: Path) -> bool:
+        if path != unreadable:
+            return original_is_file(path)
+        try:
+            path.stat()
+        except OSError:
+            return False
+        return True
+
+    with (
+        patch.object(Path, "stat", autospec=True, side_effect=fail_unreadable_stat),
+        patch.object(
+            Path,
+            "is_file",
+            autospec=True,
+            side_effect=suppress_unreadable_is_file,
+        ),
+    ):
+        with pytest.raises(
+            WorkflowError, match=r"cannot validate submission artifact"
+        ):
+            run_submit(context, submit_dependencies(events))
+
+    assert events == []
+
+
+def test_submit_rejects_unreadable_library_directory_before_prompt(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+    submission = context.build_dir / "submission.cpp"
+    submission.parent.mkdir(parents=True, exist_ok=True)
+    restricted = context.repository_root / "library/atcoder_local/restricted"
+    restricted_header = restricted / "hidden.hpp"
+    restricted.mkdir()
+    set_mtime(context.source_path, 100)
+    set_mtime(context.repository_root / "library/atcoder_local/core.hpp", 100)
+    set_mtime(restricted_header, 100)
+    set_mtime(submission, 200)
+    original_scandir = os.scandir
+
+    def fail_restricted_scandir(path: str | bytes | os.PathLike[str]):
+        if Path(path) == restricted:
+            raise PermissionError("cannot scan library directory")
+        return original_scandir(path)
+
+    with patch("os.scandir", side_effect=fail_restricted_scandir):
+        with pytest.raises(
+            WorkflowError, match=r"cannot validate submission artifact"
+        ):
+            run_submit(context, submit_dependencies(events))
+
+    assert events == []
+
+
 def unused_runner(
     argv: Sequence[str],
     *,

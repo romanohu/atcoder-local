@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
+import stat
 
 from . import WorkflowError
 from .compiler import BuildMode, CompilerFamily, detect_compiler
@@ -267,11 +269,20 @@ def _require_fresh_submission(context: TaskContext) -> Path:
     try:
         submission_mtime = submission_path.stat().st_mtime_ns
         inputs = [
-            context.source_path,
-            *(path for path in library_dir.rglob("*") if path.is_file()),
+            (context.source_path, context.source_path.stat().st_mtime_ns),
         ]
+
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        for root, _, filenames in os.walk(library_dir, onerror=raise_walk_error):
+            for filename in filenames:
+                path = Path(root) / filename
+                path_stat = path.stat()
+                if stat.S_ISREG(path_stat.st_mode):
+                    inputs.append((path, path_stat.st_mtime_ns))
         stale_input = next(
-            (path for path in inputs if path.stat().st_mtime_ns > submission_mtime),
+            (path for path, mtime in inputs if mtime > submission_mtime),
             None,
         )
     except OSError as error:

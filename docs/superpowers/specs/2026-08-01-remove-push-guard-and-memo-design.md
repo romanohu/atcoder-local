@@ -84,4 +84,3 @@ Automated tests cover:
 - the full existing build, run, test, and submit suite; and
 - active code and README content containing no push-guard or memo-generation
   references.
-
