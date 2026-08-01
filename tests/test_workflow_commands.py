@@ -174,10 +174,28 @@ def test_readme_documents_complete_workflow() -> None:
         "acc test -c abc123 -t a",
         "CAPTCHA",
         "Rated",
-        "--no-verify",
     ]
     for fragment in required:
         assert fragment in readme
+
+
+def test_readme_documents_test_owned_submission_artifact() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "`acc test` と `acc test --debug` は" in readme
+    assert "`submission.cpp`" in readme
+    assert "サンプルがすべて成功した場合だけ" in readme
+    assert "`acc submit` は bundle、コンパイル、サンプルテストを実行しません" in readme
+    assert "先に `acc test` を実行" in readme
+    assert "`main.cpp` または `library/` 配下の任意のファイル" in readme
+
+
+def test_readme_omits_retired_features() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    retired_fragments = ["push" + "-guard", "memo" + ".md", "--no-" + "verify"]
+    for fragment in retired_fragments:
+        assert fragment not in readme
 
 
 def test_readme_documents_shell_startup_file_edits_are_manual() -> None:

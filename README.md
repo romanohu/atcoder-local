@@ -2,7 +2,7 @@
 
 ## 概要
 
-このリポジトリは、AtCoder の C++ 解答をローカルで作成、ビルド、実行、サンプルテスト、提出するための環境です。`atcoder-cli` の `acc` コマンドをシェルラッパーで拡張し、コンテスト作成時の `memo.md` 生成とコンテスト中の push 防止も行います。
+このリポジトリは、AtCoder の C++ 解答をローカルで作成、ビルド、実行、サンプルテスト、提出するための環境です。`atcoder-cli` の `acc` コマンドをシェルラッパーで拡張し、ローカル開発用のコマンドを提供します。
 
 ## 必要なもの
 
@@ -62,33 +62,17 @@ bash:
 source "$(pwd)/tools/acc-wrapper.bash"
 ```
 
-ラッパーは現在のシェルセッションだけで有効です。セットアップコマンドとラッパーは `.zshrc` や `.bashrc` を自動では変更しません。常時使用する場合は、ユーザーが対応する `source` 行を `~/.zshrc` または `~/.bashrc` へ手動で追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。ラッパーを通さない `acc new` は、push-guard へのコンテスト登録と `memo.md` の生成を行いません。
-
-## push-guard のインストール
-
-クローンごとに一度、リポジトリルートで次を実行します。
-
-```sh
-uv run python tools/push_guard.py install
-```
-
-このコマンドはリポジトリ用の `pre-push` フックを設定します。既存の `core.hooksPath` が別の場所を指している場合は失敗し、既存設定を上書きしません。その場合は、既存フックとの統合方針を確認してから対応してください。
-
-インストール状態と登録済みロックは、変更を加えない `status` で確認できます。
-
-```sh
-uv run python tools/push_guard.py status
-```
+ラッパーは現在のシェルセッションだけで有効です。セットアップコマンドとラッパーは `.zshrc` や `.bashrc` を自動では変更しません。常時使用する場合は、ユーザーが対応する `source` 行を `~/.zshrc` または `~/.bashrc` へ手動で追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。
 
 ## `acc doctor`
 
-ラッパーを有効にして push-guard をインストールした後、リポジトリ内で診断を実行します。
+ラッパーを有効にした後、リポジトリ内で診断を実行します。
 
 ```sh
 acc doctor
 ```
 
-`acc doctor` は `uv`、`atcoder-cli`、`oj`、`oj-bundle`、C++23 コンパイラ、同梱 ACL とローカルヘッダー、push-guard、現在のシェルのラッパー有効化を順に確認します。`[error]` があれば終了コード 1、GCC 15 以外の利用など `[warning]` だけであれば終了コード 0 です。
+`acc doctor` は `uv`、`atcoder-cli`、`oj`、`oj-bundle`、C++23 コンパイラ、同梱 ACL とローカルヘッダー、現在のシェルのラッパー有効化を順に確認します。`[error]` があれば終了コード 1、GCC 15 以外の利用など `[warning]` だけであれば終了コード 0 です。
 
 ## コンテストの作成
 
@@ -98,9 +82,7 @@ acc doctor
 acc new abc123
 ```
 
-`atcoder-cli` による作成が成功すると、ラッパーは `contests/abc123/memo.md` を生成し、公式コンテストページから取得した開始・終了時刻を push-guard に登録します。push-guard が未インストールの場合、`acc new` はコンテストを作成する前に停止します。
-
-時刻を取得できない場合は、現在時刻から有効な `unresolved` ロックを先に保存します。対話端末では JST の終了時刻を一度入力できます。入力できない、入力を中断した、または値が不正な場合はロックが未解決のまま残り、push は停止されます。
+`acc new` は、指定した引数をそのまま `atcoder-cli` へ渡してコンテストを作成します。
 
 ## ビルド、実行、テスト、デバッグ、提出
 
@@ -116,13 +98,13 @@ acc submit
 
 - `acc build` は C++23 のリリース設定で `main.cpp` をビルドします。
 - `acc run` はリリースビルド後にプログラムを実行します。
-- `acc test` はリリースビルド後に `oj test` でサンプルを実行します。
-- `acc test --debug` は `LOCAL`、AddressSanitizer、UndefinedBehaviorSanitizer を有効にしたデバッグビルドでサンプルを実行します。
-- `acc submit` はソースを `oj-bundle` で単一ファイル化し、そのファイルを再コンパイルしてサンプルテストを通した後にだけ確認を表示します。
+- `acc test` と `acc test --debug` は `main.cpp` とローカルヘッダーを `submission.cpp` へ bundle し、その単一ファイルを各モードでコンパイルしてサンプルを実行します。`submission.cpp` はサンプルがすべて成功した場合だけ公開されます。
+- `acc test --debug` では `LOCAL`、AddressSanitizer、UndefinedBehaviorSanitizer を有効にします。
+- `acc submit` は bundle、コンパイル、サンプルテストを実行しません。先に `acc test` を実行して生成した、新しい `submission.cpp` だけを確認後に提出します。
 
 `acc submit` は対話端末専用です。確認は既定で No であり、`y` または `yes` を明示的に入力した場合だけ `atcoder-cli` へ提出を渡します。空入力、その他の入力、確認の中断では提出しません。
 
-ビルド生成物と提出用の一時ファイルは `.atcoder-local/` 配下に置かれ、Git の管理対象にはなりません。
+ビルド生成物と提出用ファイルは `.atcoder-local/` 配下に置かれ、Git の管理対象にはなりません。`main.cpp` または `library/` 配下の任意のファイルを変更すると `submission.cpp` は古い状態になるため、提出前にもう一度 `acc test` を実行してください。
 
 ## リポジトリルートからの `-c` / `-t` 指定
 
@@ -142,37 +124,10 @@ AtCoder はソースコード提出に CAPTCHA を導入しています。公式
 
 このリポジトリの `acc submit` は、提出失敗時にブラウザを開きません。提出 URL の表示、URL やソースのクリップボードへのコピー、Web 提出などの代替経路への切り替えも行いません。失敗時はエラーをそのまま返すため、提出済みと判断せず AtCoder 上の提出一覧を確認してください。
 
-## push-guard の復旧と回避手段の限界
-
-登録状態は次のコマンドで確認します。
-
-```sh
-uv run python tools/push_guard.py status
-```
-
-`status` はフックのインストール状態と、各ロックの `upcoming`、`active`、`expired`、`unresolved` を表示する読み取り専用操作です。
-
-公式時刻を取得できず終了時刻が未解決になったロックには、未来の JST 終了時刻を設定します。
-
-```sh
-uv run python tools/push_guard.py set-end abc123 "2026-08-01 22:40"
-```
-
-状態ファイルが壊れて読み込めない場合だけ、次のコマンドで復旧します。壊れたファイルは時刻付きの別ファイルへバックアップされ、現在時刻から指定時刻まで有効なロックへ置き換えられます。
-
-```sh
-uv run python tools/push_guard.py recover-state abc123 "2026-08-01 22:40"
-```
-
-フックは登録済みの期間 `[start_at, end_at)` における通常の `git push` を、リモート名やブランチ名にかかわらず停止します。複数ロックのうち、開催中または未解決のものが一件でもあれば停止します。フックは保存済み時刻だけを使用し、push 時にネットワークへ接続しません。
-
-これはローカルフックによる安全策であり、強制的なアクセス制御ではありません。`git push --no-verify` はクライアント側の `pre-push` フックを実行しないため、この保護も回避しますが、リモート側の認証、権限、ブランチ保護を回避するものではありません。`--no-verify` は復旧手段ではないため、コンテスト中の push に使用しないでください。`core.hooksPath` やフックの削除、`.git` 内の状態ファイルの直接編集、Git フックを実行しない IDE からの push も保護対象外です。
-
 ## トラブルシューティング
 
 - `acc doctor` が `current shell is not using the repository wrapper` と表示する場合は、使用中のシェルに対応する `tools/acc-wrapper.zsh` または `tools/acc-wrapper.bash` をもう一度 `source` してください。
-- `acc doctor` が `push-guard: not installed` と表示する場合は、リポジトリルートで `uv run python tools/push_guard.py install` を実行してください。
 - `no C++23 compiler found` の場合は C++23 対応コンパイラをインストールし、必要ならその実行ファイルを `CXX` に指定してから再診断してください。コンパイラが未導入の環境で GNU GCC が利用できるとは仮定しないでください。
-- `oj-bundle` が GNU C++ コンパイラを要求して失敗する場合は、GNU GCC の導入状況と `CXX` を確認してください。提出前の bundle と再コンパイルを省略しないでください。
+- `oj-bundle` が GNU C++ コンパイラを要求して失敗する場合は、GNU GCC の導入状況と `CXX` を確認してから `acc test` を再実行してください。
 - リポジトリルートで `acc build` などがタスクを特定できない場合は、`-c` と `-t` を両方指定してください。
-- 提出コマンドが失敗した場合は、サンプル失敗、非対話端末、確認入力、ログイン状態、CAPTCHA の条件、AtCoder 側の提出履歴を順に確認してください。このラッパーは自動的な代替提出を行いません。
+- `acc submit` が提出前に停止する場合は、`submission.cpp` の有無と新しさ、対話端末、確認入力を確認し、必要なら `acc test` を再実行してください。AtCoder への提出が失敗した場合は、ログイン状態、CAPTCHA の条件、AtCoder 側の提出履歴を順に確認してください。このラッパーは自動的な代替提出を行いません。
