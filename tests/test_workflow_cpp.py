@@ -194,6 +194,212 @@ def test_successful_bundle_atomically_replaces_output(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize("operation", ["compile", "bundle"])
+def test_spawn_oserror_is_normalized_and_cleans_temporary(
+    tmp_path: Path, operation: str
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output_name = "main" if operation == "compile" else "bundled.cpp"
+    output = tmp_path / f".atcoder-local/build/abc999/a/{output_name}"
+    output.parent.mkdir(parents=True)
+    output.write_text("old output", encoding="utf-8")
+    temporary = output.with_name(f".{output.name}.tmp")
+    spawn_error = OSError("cannot spawn")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        if operation == "compile":
+            temporary.write_text("partial output", encoding="utf-8")
+        raise spawn_error
+
+    with pytest.raises(WorkflowError) as raised:
+        if operation == "compile":
+            compile_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                compiler=GCC15,
+                mode=BuildMode.RELEASE,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+        else:
+            temporary.write_text("stale temporary", encoding="utf-8")
+            bundle_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+
+    assert raised.value.__cause__ is spawn_error
+    assert output.read_text(encoding="utf-8") == "old output"
+    assert not temporary.exists()
+
+
+def test_bundle_write_oserror_is_normalized_and_removes_partial_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output = tmp_path / ".atcoder-local/build/abc999/a/bundled.cpp"
+    output.parent.mkdir(parents=True)
+    output.write_text("old bundle", encoding="utf-8")
+    temporary = output.with_name(".bundled.cpp.tmp")
+    write_error = OSError("disk full")
+    original_write_text = Path.write_text
+
+    def failing_write_text(
+        path: Path, data: str, encoding: str | None = None
+    ) -> int:
+        written = original_write_text(path, data, encoding=encoding)
+        if path == temporary:
+            raise write_error
+        return written
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output
+        return subprocess.CompletedProcess(argv, 0, "partial bundle", "")
+
+    with pytest.raises(WorkflowError) as raised:
+        bundle_cpp(
+            source_path=source,
+            output_path=output,
+            working_dir=tmp_path,
+            library_dir=tmp_path / "library",
+            runner=runner,
+        )
+
+    assert raised.value.__cause__ is write_error
+    assert output.read_text(encoding="utf-8") == "old bundle"
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize("operation", ["compile", "bundle"])
+def test_replace_oserror_is_normalized_and_cleans_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output_name = "main" if operation == "compile" else "bundled.cpp"
+    output = tmp_path / f".atcoder-local/build/abc999/a/{output_name}"
+    output.parent.mkdir(parents=True)
+    output.write_text("old output", encoding="utf-8")
+    temporary = output.with_name(f".{output.name}.tmp")
+    replace_error = OSError("replace blocked")
+
+    def failing_replace(path: Path, target: Path) -> Path:
+        assert path == temporary
+        assert target == output
+        raise replace_error
+
+    monkeypatch.setattr(Path, "replace", failing_replace)
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output
+        if operation == "compile":
+            temporary.write_text("new binary", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 0, "new bundle", "")
+
+    with pytest.raises(WorkflowError) as raised:
+        if operation == "compile":
+            compile_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                compiler=GCC15,
+                mode=BuildMode.RELEASE,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+        else:
+            bundle_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+
+    assert raised.value.__cause__ is replace_error
+    assert output.read_text(encoding="utf-8") == "old output"
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize(
+    ("operation", "control_flow"),
+    [("compile", KeyboardInterrupt()), ("bundle", SystemExit(9))],
+)
+def test_control_flow_exceptions_propagate_after_temporary_cleanup(
+    tmp_path: Path, operation: str, control_flow: BaseException
+) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output_name = "main" if operation == "compile" else "bundled.cpp"
+    output = tmp_path / f".atcoder-local/build/abc999/a/{output_name}"
+    output.parent.mkdir(parents=True)
+    output.write_text("old output", encoding="utf-8")
+    temporary = output.with_name(f".{output.name}.tmp")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        temporary.write_text("partial output", encoding="utf-8")
+        raise control_flow
+
+    with pytest.raises(type(control_flow)) as raised:
+        if operation == "compile":
+            compile_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                compiler=GCC15,
+                mode=BuildMode.RELEASE,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+        else:
+            bundle_cpp(
+                source_path=source,
+                output_path=output,
+                working_dir=tmp_path,
+                library_dir=tmp_path / "library",
+                runner=runner,
+            )
+
+    assert raised.value is control_flow
+    assert output.read_text(encoding="utf-8") == "old output"
+    assert not temporary.exists()
+
+
 def test_run_binary_uses_one_argv_token_and_inherits_stdio() -> None:
     calls: list[tuple[list[str], Path | str | None, bool]] = []
 
