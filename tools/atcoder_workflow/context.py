@@ -108,7 +108,7 @@ def _config_contest_id(config: dict[str, Any], config_path: Path) -> str:
     contest = config.get("contest")
     if not isinstance(contest, dict) or not isinstance(contest.get("id"), str):
         raise WorkflowError(f"contest id is missing from {config_path}")
-    return contest["id"]
+    return _safe_path_component(contest["id"], "contest id", config_path)
 
 
 def _tasks(config: dict[str, Any], config_path: Path) -> list[dict[str, Any]]:
@@ -163,7 +163,9 @@ def _build_context(
 ) -> TaskContext:
     contest_dir = config_path.parent.resolve()
     contest_id = _config_contest_id(config, config_path)
-    task_id = _task_value(task, "id", config_path)
+    task_id = _safe_path_component(
+        _task_value(task, "id", config_path), "task id", config_path
+    )
     task_label = _task_value(task, "label", config_path)
     task_dir = _resolve_within_owner(
         contest_dir, _directory_value(task, "path", config_path), "task directory"
@@ -180,6 +182,13 @@ def _build_context(
     if not test_dir.is_dir():
         raise WorkflowError(f"test directory does not exist: {test_dir}")
 
+    artifact_root = (repository_root / ".atcoder-local" / "build").resolve()
+    build_dir = (artifact_root / contest_id / task_id).resolve()
+    if not build_dir.is_relative_to(artifact_root):
+        raise WorkflowError(
+            f"build directory escapes artifact root: {build_dir}"
+        )
+
     return TaskContext(
         repository_root=repository_root,
         contest_id=contest_id,
@@ -189,11 +198,7 @@ def _build_context(
         task_dir=task_dir,
         source_path=source_path,
         test_dir=test_dir,
-        build_dir=repository_root
-        / ".atcoder-local"
-        / "build"
-        / contest_id
-        / task_id,
+        build_dir=build_dir,
     )
 
 
@@ -211,6 +216,21 @@ def _directory_value(task: dict[str, Any], key: str, config_path: Path) -> str:
     value = directory.get(key)
     if not isinstance(value, str):
         raise WorkflowError(f"task directory {key} is missing from {config_path}")
+    return value
+
+
+def _safe_path_component(
+    value: str, description: str, config_path: Path
+) -> str:
+    if (
+        value in {"", ".", ".."}
+        or Path(value).is_absolute()
+        or "/" in value
+        or "\\" in value
+    ):
+        raise WorkflowError(
+            f"{description} must be a safe path component in {config_path}"
+        )
     return value
 
 

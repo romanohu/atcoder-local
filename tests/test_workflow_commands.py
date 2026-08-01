@@ -95,6 +95,13 @@ def test_readme_documents_shell_startup_file_edits_are_manual() -> None:
     assert "`.zshrc` や `.bashrc` を自動では変更しません" in readme
 
 
+def test_readme_pins_supported_atcoder_cli_adapter_version() -> None:
+    readme_lines = (ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+
+    assert "npm install -g atcoder-cli@2.2.0" in readme_lines
+    assert "npm install -g atcoder-cli" not in readme_lines
+
+
 def submit_dependencies(
     events: list[str],
     *,
@@ -343,6 +350,7 @@ def test_submit_runs_all_gates_in_order_with_verified_artifacts(
         working_dir=CONTEXT.task_dir,
         library_dir=CONTEXT.repository_root / "library",
         runner=dependencies.runner,
+        environment={"CXX": GCC15.executable},
     )
     compile_.assert_called_once_with(
         source_path=submission,
@@ -361,6 +369,89 @@ def test_submit_runs_all_gates_in_order_with_verified_artifacts(
         "Task: abc999_a\n"
         f"File: {submission}\n"
     )
+
+
+def test_submit_propagates_selected_compiler_to_production_bundle(
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repo"
+    task_dir = repository_root / "contests/abc999/a"
+    source_path = task_dir / "main.cpp"
+    test_dir = task_dir / "test"
+    build_dir = repository_root / ".atcoder-local/build/abc999/abc999_a"
+    test_dir.mkdir(parents=True)
+    source_path.write_text("int main() {}\n", encoding="utf-8")
+    context = TaskContext(
+        repository_root=repository_root,
+        contest_id="abc999",
+        task_id="abc999_a",
+        task_label="A",
+        contest_dir=task_dir.parent,
+        task_dir=task_dir,
+        source_path=source_path,
+        test_dir=test_dir,
+        build_dir=build_dir,
+    )
+    environment = {
+        "PATH": "/custom/bin",
+        "LANG": "C.UTF-8",
+        "ATCODER_LOCAL_WRAPPER": "1",
+    }
+    calls: list[
+        tuple[
+            list[str],
+            Path | str | None,
+            dict[str, str] | None,
+            bool,
+        ]
+    ] = []
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            (list(argv), cwd, None if env is None else dict(env), capture_output)
+        )
+        return subprocess.CompletedProcess(argv, 0, "bundled source\n", "")
+
+    dependencies = WorkflowDependencies(
+        runner=runner,
+        environ=environment,
+        which=lambda name: None,
+        input_fn=lambda prompt: "",
+        stdin_isatty=lambda: False,
+    )
+    with (
+        patch(
+            "tools.atcoder_workflow.commands.detect_compiler",
+            return_value=GCC15,
+        ),
+        patch(
+            "tools.atcoder_workflow.commands.compile_cpp",
+            return_value=build_dir / "submission-main",
+        ),
+        patch("tools.atcoder_workflow.commands.run_samples", return_value=23),
+    ):
+        result = run_submit(context, dependencies)
+
+    assert result == 23
+    assert calls == [
+        (
+            [
+                "oj-bundle",
+                "-I",
+                str(repository_root / "library"),
+                str(source_path),
+            ],
+            task_dir,
+            {**environment, "CXX": GCC15.executable},
+            True,
+        )
+    ]
 
 
 @pytest.mark.parametrize("failed_stage", ["bundle", "compile", "samples"])
@@ -493,6 +584,90 @@ def test_submit_process_receives_exact_argv_and_working_directory() -> None:
             False,
         )
     ]
+
+
+def test_submit_normalizes_raw_acc_spawn_oserror_without_retry_or_fallback() -> None:
+    events: list[str] = []
+    calls: list[tuple[list[str], Path | str | None]] = []
+    spawn_error = OSError("cannot spawn acc")
+    locate = Mock(return_value="/usr/local/bin/acc")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output
+        calls.append((list(argv), cwd))
+        events.append("submit")
+        raise spawn_error
+
+    dependencies = WorkflowDependencies(
+        runner=runner,
+        environ={"CXX": GCC15.executable},
+        which=locate,
+        input_fn=lambda prompt: events.append("prompt") or "yes",
+        stdin_isatty=lambda: True,
+    )
+    submission = CONTEXT.build_dir / "submission.cpp"
+
+    with patched_submit_stages(events):
+        with pytest.raises(WorkflowError) as raised:
+            run_submit(CONTEXT, dependencies)
+
+    assert str(raised.value) == f"submission failed for {submission}"
+    assert raised.value.__cause__ is spawn_error
+    assert calls == [
+        (
+            [
+                "/usr/local/bin/acc",
+                "submit",
+                str(submission),
+                "-c",
+                "abc999",
+                "-t",
+                "abc999_a",
+            ],
+            CONTEXT.task_dir,
+        )
+    ]
+    locate.assert_called_once_with("acc")
+    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
+
+
+@pytest.mark.parametrize("control_flow", [KeyboardInterrupt(), SystemExit(9)])
+def test_submit_process_control_flow_exceptions_propagate(
+    control_flow: BaseException,
+) -> None:
+    events: list[str] = []
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        events.append("submit")
+        raise control_flow
+
+    dependencies = WorkflowDependencies(
+        runner=runner,
+        environ={"CXX": GCC15.executable},
+        which=lambda name: "/usr/local/bin/acc" if name == "acc" else None,
+        input_fn=lambda prompt: events.append("prompt") or "yes",
+        stdin_isatty=lambda: True,
+    )
+
+    with patched_submit_stages(events):
+        with pytest.raises(type(control_flow)) as raised:
+            run_submit(CONTEXT, dependencies)
+
+    assert raised.value is control_flow
+    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
 
 
 def test_submit_prompt_names_full_task_and_bundled_file() -> None:
@@ -637,3 +812,41 @@ def test_cli_reports_workflow_error_to_stderr(capsys: pytest.CaptureFixture[str]
 
     assert result == 1
     assert capsys.readouterr().err == "[acc-wrapper] task is ambiguous\n"
+
+
+def test_cli_reports_run_spawn_error_without_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    binary = CONTEXT.build_dir / "main"
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        raise OSError("cannot execute binary")
+
+    dependencies = WorkflowDependencies(
+        runner=runner,
+        environ={},
+        which=lambda name: None,
+        input_fn=lambda prompt: "",
+        stdin_isatty=lambda: False,
+    )
+    with (
+        patch(
+            "tools.atcoder_workflow.cli.resolve_task_context",
+            return_value=CONTEXT,
+        ),
+        patch("tools.atcoder_workflow.commands.run_build", return_value=binary),
+    ):
+        result = main(["run"], cwd=CONTEXT.task_dir, dependencies=dependencies)
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == f"[acc-wrapper] run failed for {binary}\n"
+    assert "Traceback" not in captured.err

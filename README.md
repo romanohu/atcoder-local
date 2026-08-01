@@ -23,7 +23,7 @@ GNU GCC 15 を推奨します。別の C++23 対応コンパイラもビルド�
 git clone <url>
 cd atcoder-local
 uv sync --group dev
-npm install -g atcoder-cli
+npm install -g atcoder-cli@2.2.0
 ```
 
 `uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。

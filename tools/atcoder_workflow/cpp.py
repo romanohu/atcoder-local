@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 import shlex
 
@@ -49,6 +50,7 @@ def bundle_cpp(
     working_dir: Path,
     library_dir: Path,
     runner: ProcessRunner,
+    environment: Mapping[str, str] | None = None,
 ) -> Path:
     temporary = output_path.with_name(f".{output_path.name}.tmp")
     try:
@@ -57,6 +59,7 @@ def bundle_cpp(
         result = runner(
             ["oj-bundle", "-I", str(library_dir), str(source_path)],
             cwd=working_dir,
+            env=environment,
             capture_output=True,
         )
         if result.returncode != 0:
@@ -78,7 +81,10 @@ def _discard_temporary(temporary: Path) -> None:
 
 
 def run_binary(binary_path: Path, working_dir: Path, runner: ProcessRunner) -> int:
-    result = runner([str(binary_path)], cwd=working_dir)
+    try:
+        result = runner([str(binary_path)], cwd=working_dir)
+    except OSError as error:
+        raise WorkflowError(f"run failed for {binary_path}") from error
     return result.returncode
 
 
@@ -88,15 +94,18 @@ def run_samples(
     working_dir: Path,
     runner: ProcessRunner,
 ) -> int:
-    result = runner(
-        [
-            "oj",
-            "test",
-            "-c",
-            shlex.quote(str(binary_path)),
-            "-d",
-            str(test_dir),
-        ],
-        cwd=working_dir,
-    )
+    try:
+        result = runner(
+            [
+                "oj",
+                "test",
+                "-c",
+                shlex.quote(str(binary_path)),
+                "-d",
+                str(test_dir),
+            ],
+            cwd=working_dir,
+        )
+    except OSError as error:
+        raise WorkflowError(f"sample test failed for {binary_path}") from error
     return result.returncode

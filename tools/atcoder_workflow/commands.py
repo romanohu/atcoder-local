@@ -219,6 +219,8 @@ def run_submit(
     submission_path = context.build_dir / "submission.cpp"
     binary_path = context.build_dir / "submission-main"
     library_dir = context.repository_root / "library"
+    bundle_environment = dict(dependencies.environ)
+    bundle_environment["CXX"] = compiler.executable
 
     bundle_cpp(
         source_path=context.source_path,
@@ -226,6 +228,7 @@ def run_submit(
         working_dir=context.task_dir,
         library_dir=library_dir,
         runner=dependencies.runner,
+        environment=bundle_environment,
     )
     compile_cpp(
         source_path=submission_path,
@@ -261,18 +264,21 @@ def run_submit(
     if raw_acc is None:
         raise WorkflowError("acc executable was not found")
 
-    result = dependencies.runner(
-        [
-            raw_acc,
-            "submit",
-            str(submission_path),
-            "-c",
-            context.contest_id,
-            "-t",
-            context.task_id,
-        ],
-        cwd=context.task_dir,
-    )
+    try:
+        result = dependencies.runner(
+            [
+                raw_acc,
+                "submit",
+                str(submission_path),
+                "-c",
+                context.contest_id,
+                "-t",
+                context.task_id,
+            ],
+            cwd=context.task_dir,
+        )
+    except OSError as error:
+        raise WorkflowError(f"submission failed for {submission_path}") from error
     return result.returncode
 
 

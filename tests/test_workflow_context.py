@@ -14,6 +14,8 @@ def write_contest(
     relative_directory: str = "contests/abc999",
     *,
     submit: str = "main.cpp",
+    contest_id: str = "abc999",
+    task_id: str = "abc999_a",
 ) -> tuple[Path, Path]:
     contest_dir = root / relative_directory
     task_dir = contest_dir / "a"
@@ -23,13 +25,13 @@ def write_contest(
     (task_dir / submit).write_text("source\n", encoding="utf-8")
     config = {
         "contest": {
-            "id": "abc999",
+            "id": contest_id,
             "title": "Contest",
             "url": "https://atcoder.jp/contests/abc999",
         },
         "tasks": [
             {
-                "id": "abc999_a",
+                "id": task_id,
                 "label": "A",
                 "title": "Task A",
                 "url": "https://atcoder.jp/contests/abc999/tasks/abc999_a",
@@ -116,6 +118,83 @@ def test_rejects_submit_path_escaping_task_directory(tmp_path: Path) -> None:
     _, task_dir = write_contest(root, submit="../outside.cpp")
 
     with pytest.raises(WorkflowError):
+        resolve_task_context(task_dir)
+
+
+def test_rejects_absolute_contest_id_before_artifact_root_escape(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    escaped_root = tmp_path.parent / f"{tmp_path.name}-escaped-artifacts"
+    _, task_dir = write_contest(root, contest_id=str(escaped_root))
+
+    with pytest.raises(WorkflowError, match="contest id.*safe path component"):
+        resolve_task_context(task_dir)
+
+    assert not escaped_root.exists()
+
+
+def test_rejects_traversal_task_id_before_artifact_root_escape(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root, task_id="../../../escaped-task")
+
+    with pytest.raises(WorkflowError, match="task id.*safe path component"):
+        resolve_task_context(task_dir)
+
+
+@pytest.mark.parametrize("invalid_id", ["", ".", "..", "abc/999", "abc\\999"])
+@pytest.mark.parametrize("id_field", ["contest", "task"])
+def test_rejects_unsafe_config_id_components(
+    tmp_path: Path, id_field: str, invalid_id: str
+) -> None:
+    root = repository(tmp_path)
+    contest_id = invalid_id if id_field == "contest" else "abc999"
+    task_id = invalid_id if id_field == "task" else "abc999_a"
+    _, task_dir = write_contest(
+        root,
+        contest_id=contest_id,
+        task_id=task_id,
+    )
+
+    with pytest.raises(
+        WorkflowError, match=f"{id_field} id.*safe path component"
+    ):
+        resolve_task_context(task_dir)
+
+
+def test_accepts_atcoder_id_components_with_hyphen_and_underscore(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(
+        root,
+        contest_id="abc-999_X",
+        task_id="abc-999_X_task-1",
+    )
+
+    context = resolve_task_context(task_dir)
+
+    assert context.build_dir == (
+        root / ".atcoder-local/build/abc-999_X/abc-999_X_task-1"
+    )
+
+
+def test_rejects_resolved_build_directory_outside_artifact_root(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    artifact_root = root / ".atcoder-local/build"
+    escaped_root = root / "escaped-artifacts"
+    artifact_root.mkdir(parents=True)
+    escaped_root.mkdir()
+    (artifact_root / "abc999").symlink_to(
+        escaped_root, target_is_directory=True
+    )
+
+    with pytest.raises(WorkflowError, match="build directory.*artifact root"):
         resolve_task_context(task_dir)
 
 

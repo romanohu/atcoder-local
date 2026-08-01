@@ -460,3 +460,77 @@ def test_run_samples_uses_exact_oj_test_arguments() -> None:
             False,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_message"),
+    [
+        ("run", "run failed for /repo/.atcoder-local/build/abc999/a/main"),
+        (
+            "samples",
+            "sample test failed for /repo/.atcoder-local/build/abc999/a/main",
+        ),
+    ],
+)
+def test_execution_spawn_oserror_is_normalized_with_binary_path(
+    operation: str, expected_message: str
+) -> None:
+    binary_path = Path("/repo/.atcoder-local/build/abc999/a/main")
+    spawn_error = OSError("cannot spawn")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        raise spawn_error
+
+    with pytest.raises(WorkflowError) as raised:
+        if operation == "run":
+            run_binary(binary_path, Path("/repo/contests/abc999/a"), runner)
+        else:
+            run_samples(
+                binary_path,
+                Path("/repo/contests/abc999/a/test"),
+                Path("/repo/contests/abc999/a"),
+                runner,
+            )
+
+    assert str(raised.value) == expected_message
+    assert raised.value.__cause__ is spawn_error
+
+
+@pytest.mark.parametrize(
+    ("operation", "control_flow"),
+    [("run", KeyboardInterrupt()), ("samples", SystemExit(9))],
+)
+def test_execution_control_flow_exceptions_propagate(
+    operation: str, control_flow: BaseException
+) -> None:
+    binary_path = Path("/repo/.atcoder-local/build/abc999/a/main")
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del argv, cwd, env, capture_output
+        raise control_flow
+
+    with pytest.raises(type(control_flow)) as raised:
+        if operation == "run":
+            run_binary(binary_path, Path("/repo/contests/abc999/a"), runner)
+        else:
+            run_samples(
+                binary_path,
+                Path("/repo/contests/abc999/a/test"),
+                Path("/repo/contests/abc999/a"),
+                runner,
+            )
+
+    assert raised.value is control_flow
