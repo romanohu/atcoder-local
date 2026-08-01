@@ -17,7 +17,7 @@ from .commands import (
     run_tests,
 )
 from .compiler import BuildMode
-from .context import resolve_task_context
+from .context import find_repository_root, resolve_task_context
 from .runner import run_process
 
 
@@ -47,7 +47,8 @@ def main(
 
     try:
         if arguments.command == "doctor":
-            return run_doctor(cwd, active_dependencies)
+            repository_root = find_repository_root(cwd)
+            return run_doctor(repository_root, active_dependencies)
         context = resolve_task_context(
             cwd, arguments.contest_id, arguments.task_label
         )

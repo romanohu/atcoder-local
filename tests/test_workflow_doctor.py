@@ -222,16 +222,43 @@ def test_run_doctor_succeeds_with_warning_only(
     assert "[warning] compiler:" in capsys.readouterr().out
 
 
-def test_cli_doctor_dispatches_without_resolving_a_task(tmp_path: Path) -> None:
+def test_cli_doctor_uses_nearest_repository_root_from_nested_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".git").mkdir()
+    root = tmp_path / "nearest-repository"
+    root.mkdir()
+    (root / ".git").mkdir()
+    _prepare_root(root)
+    nested = root / "contests" / "abc999" / "a"
+    nested.mkdir(parents=True)
+    checked_roots: list[Path] = []
     dependencies = _dependencies()
-    with (
-        patch("tools.atcoder_workflow.cli.run_doctor", return_value=13) as doctor,
-        patch("tools.atcoder_workflow.cli.resolve_task_context") as resolve,
-    ):
+    dependencies.guard_is_installed = (
+        lambda actual_root: checked_roots.append(actual_root) or True
+    )
+    with patch("tools.atcoder_workflow.cli.resolve_task_context") as resolve:
+        result = workflow_main(["doctor"], cwd=nested, dependencies=dependencies)
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert len(output.out.splitlines()) == 8
+    assert all(line.startswith("[ok]") for line in output.out.splitlines())
+    assert output.err == ""
+    assert checked_roots == [root]
+    resolve.assert_not_called()
+
+
+def test_cli_doctor_reports_no_repository_as_workflow_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("tools.atcoder_workflow.cli.resolve_task_context") as resolve:
         result = workflow_main(
-            ["doctor"], cwd=tmp_path, dependencies=dependencies
+            ["doctor"], cwd=tmp_path, dependencies=_dependencies()
         )
 
-    assert result == 13
-    doctor.assert_called_once_with(tmp_path, dependencies)
+    output = capsys.readouterr()
+    assert result == 1
+    assert output.out == ""
+    assert output.err == "[acc-wrapper] not inside a Git repository\n"
     resolve.assert_not_called()

@@ -35,7 +35,7 @@ def resolve_task_context(
     if not current_directory.is_dir():
         raise WorkflowError(f"current directory does not exist: {current_directory}")
 
-    repository_root = _find_repository_root(current_directory)
+    repository_root = find_repository_root(current_directory)
     has_contest = contest_id is not None
     has_task = task_label is not None
     if has_contest != has_task:
@@ -53,8 +53,9 @@ def resolve_task_context(
     return _build_context(repository_root, config_path, config, task)
 
 
-def _find_repository_root(cwd: Path) -> Path:
-    for directory in (cwd, *cwd.parents):
+def find_repository_root(cwd: Path | str) -> Path:
+    current_directory = Path(cwd).resolve()
+    for directory in (current_directory, *current_directory.parents):
         if (directory / ".git").exists():
             return directory
     raise WorkflowError("not inside a Git repository")
