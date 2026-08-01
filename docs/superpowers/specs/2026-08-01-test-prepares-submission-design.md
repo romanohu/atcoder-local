@@ -12,8 +12,9 @@ Move submission artifact preparation and verification from `acc submit` to
 
 Both `acc test` and `acc test --debug` perform these stages in order:
 
-1. Detect the configured C++ compiler.
-2. Invalidate any previously verified `submission.cpp`.
+1. Validate the source type and invalidate any previously verified
+   `submission.cpp`.
+2. Detect the configured C++ compiler.
 3. Bundle `main.cpp` and repository-local headers into a temporary source with
    `oj-bundle`.
 4. Compile the temporary bundled source.
@@ -68,11 +69,12 @@ is treated as a workflow error, not as fresh output.
 
 ## Internal Structure
 
-A focused helper invalidates the published artifact, bundles a temporary
-submission candidate, compiles it with the selected build mode, and returns
-the candidate source and executable paths. `run_tests` runs samples against
-that executable and publishes the candidate source only when `oj test`
-returns zero. A `finally` cleanup removes any unpublished candidate.
+A focused helper validates the source type, invalidates the published artifact
+before compiler detection, bundles a temporary submission candidate, compiles
+it with the selected build mode, and returns the candidate source and
+executable paths. `run_tests` runs samples against that executable and
+publishes the candidate source only when `oj test` returns zero. A `finally`
+cleanup removes any unpublished candidate.
 
 A separate freshness helper validates the artifact for `run_submit`. It has no
 side effects and reports missing, stale, and timestamp-access errors as
@@ -82,6 +84,7 @@ side effects and reports missing, stale, and timestamp-access errors as
 ## Error Handling
 
 - Unsupported non-C++ sources fail before compiler detection or bundling.
+- Compiler detection failure leaves no verified artifact.
 - Bundle failure stops compilation and sample execution.
 - Compile failure stops sample execution and leaves no verified artifact.
 - Sample failure returns the `oj test` exit code and leaves no verified
