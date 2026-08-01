@@ -18,7 +18,10 @@ from tools.atcoder_workflow.runner import run_process
 
 
 def fake_compiler_runner(
-    versions: Mapping[str, str], *, failed_probes: set[str] | None = None
+    versions: Mapping[str, str],
+    *,
+    failed_probes: set[str] | None = None,
+    calls: list[list[str]] | None = None,
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     failed_probes = failed_probes or set()
 
@@ -30,11 +33,13 @@ def fake_compiler_runner(
         capture_output: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         del cwd, env, capture_output
+        if calls is not None:
+            calls.append(list(argv))
         executable = argv[0]
         if argv[1:] == ["--version"]:
             if executable in versions:
                 return subprocess.CompletedProcess(argv, 0, versions[executable], "")
-            return subprocess.CompletedProcess(argv, 127, "", "not found")
+            raise FileNotFoundError(executable)
         return subprocess.CompletedProcess(
             argv, 1 if executable in failed_probes else 0, "", "unsupported"
         )
@@ -82,13 +87,48 @@ def test_verified_gcc15_wins_over_apple_gpp() -> None:
     assert (info.executable, info.major) == ("/opt/g++-15", 15)
 
 
-def test_broken_explicit_cxx_raises_workflow_error() -> None:
+def test_same_path_rejected_as_gcc15_can_fallback_to_generic_gpp() -> None:
+    calls: list[list[str]] = []
+    info = detect_compiler(
+        environ={},
+        runner=fake_compiler_runner(
+            {"/opt/g++": "g++ (GCC) 14.3.0"}, calls=calls
+        ),
+        which=fake_which({"g++-15": "/opt/g++", "g++": "/opt/g++"}),
+    )
+
+    assert (info.executable, info.family, info.major) == (
+        "/opt/g++",
+        CompilerFamily.GCC,
+        14,
+    )
+    assert len(calls) == 2
+    assert calls[0] == ["/opt/g++", "--version"]
+
+
+def test_missing_explicit_cxx_spawn_error_raises_workflow_error(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(WorkflowError):
         detect_compiler(
-            environ={"CXX": "missing-cxx"},
-            runner=fake_compiler_runner({}),
+            environ={"CXX": str(tmp_path / "missing-cxx")},
+            runner=run_process,
             which=fake_which({"g++-15": "/opt/g++-15"}),
         )
+
+
+def test_stale_auto_candidate_spawn_error_is_skipped() -> None:
+    info = detect_compiler(
+        environ={},
+        runner=fake_compiler_runner(
+            {"/opt/clang++": "clang version 18.1.0"}
+        ),
+        which=fake_which(
+            {"g++-15": "/stale/g++-15", "clang++": "/opt/clang++"}
+        ),
+    )
+
+    assert info.executable == "/opt/clang++"
 
 
 def test_explicit_compiler_that_cannot_compile_cpp23_raises_workflow_error() -> None:

@@ -38,7 +38,7 @@ def detect_compiler(
     if "CXX" in environ:
         return _verified_compiler(environ["CXX"], runner)
 
-    seen_paths: set[str] = set()
+    verified_paths: dict[str, CompilerInfo | None] = {}
     candidates = (
         ("g++-15", _is_gcc15),
         ("g++15", _is_gcc15),
@@ -47,12 +47,15 @@ def detect_compiler(
     )
     for name, acceptable in candidates:
         executable = which(name)
-        if executable is None or executable in seen_paths:
+        if executable is None:
             continue
-        seen_paths.add(executable)
-        try:
-            info = _verified_compiler(executable, runner)
-        except WorkflowError:
+        if executable not in verified_paths:
+            try:
+                verified_paths[executable] = _verified_compiler(executable, runner)
+            except WorkflowError:
+                verified_paths[executable] = None
+        info = verified_paths[executable]
+        if info is None:
             continue
         if acceptable(info):
             return info
@@ -93,7 +96,10 @@ def _verified_compiler(executable: str, runner: ProcessRunner) -> CompilerInfo:
     if not executable:
         raise WorkflowError("CXX must name one compiler executable")
 
-    version = runner([executable, "--version"], capture_output=True)
+    try:
+        version = runner([executable, "--version"], capture_output=True)
+    except OSError as error:
+        raise WorkflowError(f"failed to execute compiler: {executable}") from error
     version_text = version.stdout + version.stderr
     if version.returncode != 0:
         raise WorkflowError(f"compiler version check failed: {executable}")
@@ -120,10 +126,13 @@ def _probe_cpp23(executable: str, runner: ProcessRunner) -> None:
         source_path = Path(directory) / "probe.cpp"
         output_path = Path(directory) / "probe"
         source_path.write_text("int main() { return 0; }\n", encoding="utf-8")
-        result = runner(
-            [executable, "-std=gnu++23", str(source_path), "-o", str(output_path)],
-            capture_output=True,
-        )
+        try:
+            result = runner(
+                [executable, "-std=gnu++23", str(source_path), "-o", str(output_path)],
+                capture_output=True,
+            )
+        except OSError as error:
+            raise WorkflowError(f"failed to execute compiler: {executable}") from error
     if result.returncode != 0:
         raise WorkflowError(f"compiler does not support C++23: {executable}")
 
