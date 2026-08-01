@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make both forms of `acc test` build and verify `submission.cpp`, while `acc submit` only accepts and submits a fresh verified artifact.
+**Goal:** Make both forms of `acc test` build and verify `submission.cpp`, make `acc submit` only accept and submit a fresh verified artifact, and remove push blocking and automatic `memo.md` generation.
 
-**Architecture:** Keep command orchestration in `tools/atcoder_workflow/commands.py`. Add a private test-preparation pipeline that uses a temporary bundled candidate and publishes it atomically only after samples pass; add a separate, side-effect-free freshness validator used by submission. Preserve the existing process-runner boundary so unit tests can verify external command arguments without invoking AtCoder tools.
+**Architecture:** Keep command orchestration in `tools/atcoder_workflow/commands.py`. Add a private test-preparation pipeline that uses a temporary bundled candidate and publishes it atomically only after samples pass; add a separate, side-effect-free freshness validator used by submission. Reduce `tools/acc_wrapper.py` to local-command dispatch plus transparent raw `atcoder-cli` delegation, and remove the Git-hook subsystem. Preserve the existing process-runner boundary so unit tests can verify external command arguments without invoking AtCoder tools.
 
 **Tech Stack:** Python 3.9+, `pathlib`, `pytest`, `unittest.mock`, existing `oj-bundle`, `oj test`, and `atcoder-cli` adapters.
 
@@ -23,6 +23,10 @@
 - Freshness uses modification times and no sidecar metadata.
 - Missing or stale artifacts must fail before confirmation and tell the user to run `acc test`.
 - Preserve the existing explicit confirmation, raw `atcoder-cli` invocation, exit-code propagation, and no-fallback policy.
+- `acc new` must delegate directly to raw `atcoder-cli` without hook preflight, contest registration, schedule fetching, configuration parsing, or memo creation.
+- Remove the tracked pre-push hook, push-guard implementation, push-guard tests, and push-guard-only fixture.
+- Remove the push-guard check from `acc doctor`.
+- Do not delete existing contest `memo.md` files or historical design and plan documents.
 - Implement every behavior change with a failing test first.
 
 ---
@@ -30,8 +34,12 @@
 ## File Structure
 
 - `tools/atcoder_workflow/commands.py`: orchestrates the new test pipeline, manages pending/published artifact paths, validates freshness, and simplifies submission.
+- `tools/acc_wrapper.py`: dispatches the five local commands and delegates all other commands directly to raw `atcoder-cli`.
 - `tests/test_workflow_commands.py`: specifies release/debug test pipelines, failure cleanup, freshness behavior, and submission boundaries.
+- `tests/test_acc_wrapper.py`: specifies local-command dispatch and transparent raw-command delegation.
+- `tests/test_workflow_doctor.py`: specifies the seven remaining environment checks.
 - `README.md`: documents the new ownership split between `acc test` and `acc submit`.
+- Deleted: `.githooks/pre-push`, `tools/push_guard.py`, push-guard tests, and `tests/fixtures/atcoder_contest_duration.html`.
 
 ### Task 0: Make repository-local header bundling reliable
 
@@ -709,15 +717,138 @@ git add tools/atcoder_workflow/commands.py tests/test_workflow_commands.py
 git commit -m "feat: submit only fresh tested artifacts"
 ```
 
-### Task 3: Update user documentation and run full verification
+### Task 3: Remove push blocking and memo generation
 
 **Files:**
-- Modify: `README.md:103-147`
+- Modify: `tools/acc_wrapper.py`
+- Modify: `tools/atcoder_workflow/commands.py`
+- Modify: `tests/test_acc_wrapper.py`
+- Modify: `tests/test_workflow_doctor.py`
+- Delete: `.githooks/pre-push`
+- Delete: `tools/push_guard.py`
+- Delete: `tests/test_push_guard.py`
+- Delete: `tests/test_push_guard_integration.py`
+- Delete: `tests/fixtures/atcoder_contest_duration.html`
+
+**Interfaces:**
+- Consumes: wrapper arguments, current working directory, injected raw-command runner, and injected local-workflow runner.
+- Produces: `main(argv=None, *, cwd=None, acc_runner=None, workflow_runner=None) -> int`; `WorkflowDependencies` without a guard callback; seven doctor checks.
+
+- [ ] **Step 1: Rewrite wrapper and doctor tests for the reduced behavior**
+
+Remove tests and imports that specify memo parsing, memo creation, guard
+preflight, contest registration, and guard error handling. Preserve tests for
+the five local workflow commands and raw command delegation, then add:
+
+```python
+def test_new_delegates_once_and_returns_exact_acc_code() -> None:
+    native_calls: list[list[str]] = []
+    workflow_calls: list[list[str]] = []
+
+    result = main(
+        ["new", "--template", "cpp", "abc454"],
+        cwd=Path("/repo"),
+        acc_runner=lambda args: native_calls.append(args) or 23,
+        workflow_runner=lambda args, cwd: workflow_calls.append(args) or 0,
+    )
+
+    assert result == 23
+    assert native_calls == [["new", "--template", "cpp", "abc454"]]
+    assert workflow_calls == []
+
+
+def test_wrapper_has_no_feature_specific_operations_dependency() -> None:
+    assert "operations" not in inspect.signature(main).parameters
+```
+
+Change the healthy doctor order to:
+
+```python
+[
+    "uv",
+    "atcoder-cli",
+    "oj",
+    "oj-bundle",
+    "compiler",
+    "acl",
+    "shell-wrapper",
+]
+```
+
+Remove the `guard_installed` fixture input and the test for a missing guard.
+Change the printed-line assertion from eight checks to seven.
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+Run:
+
+```sh
+uv run python -m pytest \
+  tests/test_acc_wrapper.py \
+  tests/test_workflow_doctor.py \
+  -v
+```
+
+Expected: the new delegation test FAILS because `acc new` still performs guard
+preflight, the signature test FAILS because the operations dependency remains,
+and the doctor order/count tests FAIL because push-guard remains registered.
+
+- [ ] **Step 3: Simplify the wrapper and doctor implementation**
+
+In `tools/acc_wrapper.py`, keep only the imports needed for process delegation,
+`CUSTOM_COMMANDS`, and `main`. Remove `WrapperOperations`, every push-guard and
+memo helper, all new-command parsing, and the `operations` parameter. Preserve
+the current local-workflow dispatch. For any other command, call the injected
+`acc_runner(args)` or `subprocess.run(["acc", *args], check=False)` exactly
+once and return its exit code.
+
+In `tools/atcoder_workflow/commands.py`, remove the push-guard import,
+`WorkflowDependencies.guard_is_installed`, `_push_guard_check`, and its entry
+in `collect_doctor_checks`.
+
+- [ ] **Step 4: Delete the retired feature and verify focused tests GREEN**
+
+Delete the tracked hook, push-guard module, its unit and integration tests, and
+its schedule-parsing fixture. Then run:
+
+```sh
+uv run python -m pytest \
+  tests/test_acc_wrapper.py \
+  tests/test_workflow_doctor.py \
+  -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Verify that active implementation has no retired references**
+
+Run:
+
+```sh
+rg -ni 'push[_ -]?guard|memo\.md|atcoder_contest_duration' README.md tools tests
+git ls-files .githooks
+```
+
+Expected at this stage: `rg` may still find README references that Task 4 owns,
+but finds none under `tools` or `tests`; `git ls-files .githooks` prints
+nothing. Historical `docs/superpowers/` files are intentionally excluded.
+
+- [ ] **Step 6: Commit Task 3**
+
+```sh
+git add -A .githooks tools tests
+git commit -m "refactor: remove push guard and memo generation"
+```
+
+### Task 4: Update user documentation and run full verification
+
+**Files:**
+- Modify: `README.md`
 - Test: `tests/test_workflow_commands.py:44-100`
 
 **Interfaces:**
 - Consumes: final command behavior from Tasks 1 and 2.
-- Produces: documented workflow contract and a regression assertion for its required wording.
+- Produces: documented workflow contract and regression assertions for its required wording and retired-feature removal.
 
 - [ ] **Step 1: Write a failing README contract test**
 
@@ -732,6 +863,14 @@ def test_readme_documents_test_owned_submission_artifact() -> None:
     assert "サンプルがすべて成功した場合だけ" in readme
     assert "`acc submit` は bundle、コンパイル、サンプルテストを実行しません" in readme
     assert "先に `acc test` を実行" in readme
+
+
+def test_readme_omits_retired_push_guard_and_memo_generation() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "push-guard" not in readme
+    assert "memo.md" not in readme
+    assert "--no-verify" not in readme
 ```
 
 - [ ] **Step 2: Run the README test and verify RED**
@@ -739,10 +878,11 @@ def test_readme_documents_test_owned_submission_artifact() -> None:
 Run:
 
 ```sh
-uv run python -m pytest tests/test_workflow_commands.py::test_readme_documents_test_owned_submission_artifact -v
+uv run python -m pytest tests/test_workflow_commands.py -k readme -v
 ```
 
-Expected: FAIL because the README still assigns bundling and sample verification to `acc submit`.
+Expected: FAIL because the README still assigns bundling and sample verification
+to `acc submit` and still documents push-guard and memo generation.
 
 - [ ] **Step 3: Update README behavior and troubleshooting text**
 
@@ -759,6 +899,12 @@ Replace the command bullets so they state:
 ```
 
 Document that changes to `main.cpp` or any repository-local header make the artifact stale and require another `acc test`. Keep the CAPTCHA and no-browser/no-clipboard limitations unchanged.
+
+Also remove or rewrite the overview, wrapper setup, doctor, contest creation,
+recovery, and troubleshooting text so push blocking, contest lock registration,
+the hook installer, `--no-verify`, and automatic `memo.md` generation are no
+longer described. State simply that `acc new` creates the contest through
+`atcoder-cli`.
 
 - [ ] **Step 4: Run documentation and focused workflow tests**
 
@@ -780,9 +926,18 @@ git diff --check
 git status --short
 ```
 
-Expected: all tests PASS; `git diff --check` prints nothing; status lists only the intended implementation, tests, README, and this plan if it has not already been committed.
+Also run the active-reference check:
 
-- [ ] **Step 6: Commit Task 3**
+```sh
+rg -ni 'push[_ -]?guard|memo\.md|atcoder_contest_duration' README.md tools tests
+git ls-files .githooks
+```
+
+Expected: all tests PASS; both reference checks and `git diff --check` print
+nothing; status lists only the intended README, tests, and this plan if it has
+not already been committed.
+
+- [ ] **Step 6: Commit Task 4**
 
 ```sh
 git add README.md tests/test_workflow_commands.py docs/superpowers/plans/2026-08-01-test-prepares-submission.md
