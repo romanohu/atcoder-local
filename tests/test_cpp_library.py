@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -46,6 +47,21 @@ class TestCppLibrary(unittest.TestCase):
             )
             return completed.stdout
 
+    def gnu_compiler(self) -> str:
+        for name in ("g++-15", "g++15", "g++"):
+            compiler = shutil.which(name)
+            if compiler is None:
+                continue
+            version = subprocess.run(
+                [compiler, "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            if "clang" not in version.casefold():
+                return compiler
+        self.skipTest("oj-bundle requires a GNU C++ compiler")
+
     def test_local_headers_and_acl_compile_together(self) -> None:
         source = """
         #include <atcoder/dsu>
@@ -68,3 +84,66 @@ class TestCppLibrary(unittest.TestCase):
         int main() { DBG(42); }
         """
         self.assertEqual(self.compile_and_run(source), "")
+
+    def test_bundled_submission_is_self_contained(self) -> None:
+        bundler = shutil.which("oj-bundle")
+        if bundler is None:
+            self.skipTest("oj-bundle is not installed")
+        compiler = self.gnu_compiler()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source_path = directory / "main.cpp"
+            submission_path = directory / "submission.cpp"
+            executable_path = directory / "submission-main"
+            source_path.write_text(
+                textwrap.dedent(
+                    """
+                    #include <atcoder/dsu>
+                    #include <atcoder_local/core.hpp>
+                    #include <iostream>
+                    int main() {
+                        atcoder::dsu graph(2);
+                        graph.merge(0, 1);
+                        ll value = 3;
+                        chmax(value, 5LL);
+                        std::cout << graph.same(0, 1) << ' ' << value << '\\n';
+                    }
+                    """
+                ),
+                encoding="utf-8",
+            )
+            bundled = subprocess.run(
+                [
+                    bundler,
+                    "-I",
+                    str(REPOSITORY_ROOT / "library"),
+                    str(source_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**os.environ, "CXX": compiler},
+            )
+            self.assertEqual(bundled.returncode, 0, bundled.stderr)
+            submission_path.write_text(bundled.stdout, encoding="utf-8")
+            subprocess.run(
+                [
+                    compiler,
+                    "-std=gnu++23",
+                    str(submission_path),
+                    "-o",
+                    str(executable_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            completed = subprocess.run(
+                [str(executable_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.stdout, "1 5\n")
