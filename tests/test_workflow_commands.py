@@ -271,6 +271,29 @@ def test_build_rejects_unsupported_source_before_compiler_detection() -> None:
     detect.assert_not_called()
 
 
+def test_submit_rejects_unsupported_source_before_any_stage() -> None:
+    events: list[str] = []
+    python_context = TaskContext(
+        **{**CONTEXT.__dict__, "source_path": CONTEXT.task_dir / "main.py"}
+    )
+    dependencies = submit_dependencies(events)
+
+    with (
+        patch("tools.atcoder_workflow.commands.detect_compiler") as detect,
+        patch("tools.atcoder_workflow.commands.bundle_cpp") as bundle,
+        patch("tools.atcoder_workflow.commands.compile_cpp") as compile_,
+        patch("tools.atcoder_workflow.commands.run_samples") as samples,
+    ):
+        with pytest.raises(WorkflowError, match="unsupported source file"):
+            run_submit(python_context, dependencies)
+
+    detect.assert_not_called()
+    bundle.assert_not_called()
+    compile_.assert_not_called()
+    samples.assert_not_called()
+    assert events == []
+
+
 def test_submit_runs_all_gates_in_order_with_verified_artifacts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -466,6 +489,29 @@ def test_submit_prompt_names_full_task_and_bundled_file() -> None:
     assert prompts == [
         f"Submit abc999_a from {CONTEXT.build_dir / 'submission.cpp'}? [y/N] "
     ]
+
+
+@pytest.mark.parametrize("interruption_type", [EOFError, KeyboardInterrupt])
+def test_submit_normalizes_interrupted_confirmation_without_running_acc(
+    interruption_type: type[BaseException],
+) -> None:
+    events: list[str] = []
+    base = submit_dependencies(events)
+    locate = Mock(return_value="/usr/local/bin/acc")
+    dependencies = WorkflowDependencies(
+        runner=base.runner,
+        environ=base.environ,
+        which=locate,
+        input_fn=Mock(side_effect=interruption_type),
+        stdin_isatty=base.stdin_isatty,
+    )
+
+    with patched_submit_stages(events):
+        with pytest.raises(WorkflowError, match="confirmation.*interrupted"):
+            run_submit(CONTEXT, dependencies)
+
+    locate.assert_not_called()
+    assert events == ["bundle", "compile", "samples"]
 
 
 def test_cli_dispatches_submit_and_propagates_raw_exit_code() -> None:

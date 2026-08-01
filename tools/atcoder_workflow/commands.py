@@ -25,8 +25,7 @@ def run_build(
     dependencies: WorkflowDependencies,
     mode: BuildMode = BuildMode.RELEASE,
 ) -> Path:
-    if context.source_path.suffix != ".cpp":
-        raise WorkflowError(f"unsupported source file: {context.source_path}")
+    _require_cpp_source(context)
 
     if mode is BuildMode.RELEASE:
         output_path = context.build_dir / "main"
@@ -71,6 +70,7 @@ def run_tests(
 def run_submit(
     context: TaskContext, dependencies: WorkflowDependencies
 ) -> int:
+    _require_cpp_source(context)
     compiler = detect_compiler(
         dependencies.environ, dependencies.runner, dependencies.which
     )
@@ -106,9 +106,12 @@ def run_submit(
     print(f"Contest: {context.contest_id}")
     print(f"Task: {context.task_id}")
     print(f"File: {submission_path}")
-    answer = dependencies.input_fn(
-        f"Submit {context.task_id} from {submission_path}? [y/N] "
-    )
+    try:
+        answer = dependencies.input_fn(
+            f"Submit {context.task_id} from {submission_path}? [y/N] "
+        )
+    except (EOFError, KeyboardInterrupt) as error:
+        raise WorkflowError("submission confirmation was interrupted") from error
     if answer.strip().casefold() not in {"y", "yes"}:
         return 1
 
@@ -129,3 +132,8 @@ def run_submit(
         cwd=context.task_dir,
     )
     return result.returncode
+
+
+def _require_cpp_source(context: TaskContext) -> None:
+    if context.source_path.suffix != ".cpp":
+        raise WorkflowError(f"unsupported source file: {context.source_path}")
