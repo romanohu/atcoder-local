@@ -1,15 +1,14 @@
-//#include <bits/stdc++.h>
 #include <iostream>
 #include <string>
 #include <vector>
-using namespace std;
-using ll = long long;
+#include <atcoder_local/core.hpp>
+#include <atcoder_local/debug.hpp>
+#include <atcoder_local/io.hpp>
 
-#define rep(i, N) for (int i=0; i<(N); ++i)
+using namespace std;
 
 int main() {
-    ios::sync_with_stdio(false);
-    cin.tie(nullptr);
+    atcoder_local::setup_io();
 
     return 0;
 }
