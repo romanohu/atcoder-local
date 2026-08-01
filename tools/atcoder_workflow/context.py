@@ -174,8 +174,6 @@ def _build_context(
         task_dir, _directory_value(task, "testdir", config_path), "test directory"
     )
 
-    if source_path.suffix != ".cpp":
-        raise WorkflowError(f"submit path must be a .cpp file: {source_path}")
     if not source_path.is_file():
         raise WorkflowError(f"submit source does not exist: {source_path}")
     if not test_dir.is_dir():

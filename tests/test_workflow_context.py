@@ -20,8 +20,7 @@ def write_contest(
     test_dir = task_dir / "test"
     task_dir.mkdir(parents=True)
     test_dir.mkdir()
-    (task_dir / "main.cpp").write_text("int main() {}\n", encoding="utf-8")
-    (contest_dir / "outside.cpp").write_text("int main() {}\n", encoding="utf-8")
+    (task_dir / submit).write_text("source\n", encoding="utf-8")
     config = {
         "contest": {
             "id": "abc999",
@@ -79,6 +78,15 @@ def test_resolves_root_flags_and_task_label_case_insensitively(tmp_path: Path) -
     assert context.contest_dir == contest_dir
     assert context.task_dir == task_dir
     assert context.task_id == "abc999_a"
+
+
+def test_resolves_non_cpp_submit_without_selecting_a_backend(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root, submit="main.py")
+
+    context = resolve_task_context(task_dir)
+
+    assert context.source_path == task_dir / "main.py"
 
 
 @pytest.mark.parametrize(
