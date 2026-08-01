@@ -255,7 +255,7 @@ def submission_context(tmp_path: Path) -> TaskContext:
 Run:
 
 ```sh
-uv run pytest \
+uv run python -m pytest \
   tests/test_workflow_commands.py::test_run_tests_bundles_compiles_samples_then_publishes_release_artifact \
   tests/test_workflow_commands.py::test_run_tests_compiler_failure_invalidates_previous_submission \
   -v
@@ -333,7 +333,7 @@ from any `OSError`.
 Run:
 
 ```sh
-uv run pytest \
+uv run python -m pytest \
   tests/test_workflow_commands.py::test_run_tests_bundles_compiles_samples_then_publishes_release_artifact \
   tests/test_workflow_commands.py::test_run_tests_compiler_failure_invalidates_previous_submission \
   -v
@@ -439,7 +439,7 @@ def patched_test_stages(
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -k 'run_tests and (debug or failure)' -v
+uv run python -m pytest tests/test_workflow_commands.py -k 'run_tests and (debug or failure)' -v
 ```
 
 Expected: the debug test FAILS because the release-only implementation writes
@@ -494,7 +494,7 @@ the new parametrized pipeline test now owns all `run_tests` failure behavior.
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -k 'run_tests or failed_build' -v
+uv run python -m pytest tests/test_workflow_commands.py -k 'run_tests or failed_build' -v
 ```
 
 Expected: PASS, including the unchanged `run_program` build-failure behavior.
@@ -594,7 +594,7 @@ def test_submit_rejects_missing_library_before_prompt(tmp_path: Path) -> None:
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -k 'submit_rejects_missing_artifact or submit_rejects_artifact_older or submit_rejects_missing_library or submit_accepts_artifact_newer' -v
+uv run python -m pytest tests/test_workflow_commands.py -k 'submit_rejects_missing_artifact or submit_rejects_artifact_older or submit_rejects_missing_library or submit_accepts_artifact_newer' -v
 ```
 
 Expected: FAIL because current `run_submit` starts compiler detection and bundling instead of checking the existing artifact.
@@ -644,7 +644,7 @@ Keep `_require_cpp_source(context)` first. Then require an interactive terminal,
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -k 'submit_rejects_missing_artifact or submit_rejects_artifact_older or submit_rejects_missing_library or submit_accepts_artifact_newer' -v
+uv run python -m pytest tests/test_workflow_commands.py -k 'submit_rejects_missing_artifact or submit_rejects_artifact_older or submit_rejects_missing_library or submit_accepts_artifact_newer' -v
 ```
 
 Expected: PASS.
@@ -693,7 +693,7 @@ def test_submit_never_builds_or_runs_samples() -> None:
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -k submit -v
+uv run python -m pytest tests/test_workflow_commands.py -k submit -v
 ```
 
 Expected: PASS. Confirm that the exact raw command remains:
@@ -739,7 +739,7 @@ def test_readme_documents_test_owned_submission_artifact() -> None:
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py::test_readme_documents_test_owned_submission_artifact -v
+uv run python -m pytest tests/test_workflow_commands.py::test_readme_documents_test_owned_submission_artifact -v
 ```
 
 Expected: FAIL because the README still assigns bundling and sample verification to `acc submit`.
@@ -765,7 +765,7 @@ Document that changes to `main.cpp` or any repository-local header make the arti
 Run:
 
 ```sh
-uv run pytest tests/test_workflow_commands.py -v
+uv run python -m pytest tests/test_workflow_commands.py -v
 ```
 
 Expected: PASS.
@@ -775,7 +775,7 @@ Expected: PASS.
 Run:
 
 ```sh
-uv run pytest -v
+uv run python -m pytest -v
 git diff --check
 git status --short
 ```
