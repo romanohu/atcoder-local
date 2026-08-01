@@ -274,44 +274,46 @@ def _discard_generated_file(path: Path, description: str) -> None:
         raise WorkflowError(f"cannot remove {description}: {path}") from error
 
 
+def _require_fresh_submission(context: TaskContext) -> Path:
+    submission_path = context.build_dir / "submission.cpp"
+    library_dir = context.repository_root / "library"
+    if not submission_path.is_file():
+        raise WorkflowError(
+            f"submission artifact is missing: {submission_path}; run acc test first"
+        )
+    if not library_dir.is_dir():
+        raise WorkflowError(f"library directory does not exist: {library_dir}")
+
+    try:
+        submission_mtime = submission_path.stat().st_mtime_ns
+        inputs = [
+            context.source_path,
+            *(path for path in library_dir.rglob("*") if path.is_file()),
+        ]
+        stale_input = next(
+            (path for path in inputs if path.stat().st_mtime_ns > submission_mtime),
+            None,
+        )
+    except OSError as error:
+        raise WorkflowError(
+            f"cannot validate submission artifact: {submission_path}"
+        ) from error
+
+    if stale_input is not None:
+        raise WorkflowError(
+            f"submission artifact is stale: {stale_input} is newer; "
+            "run acc test first"
+        )
+    return submission_path
+
+
 def run_submit(
     context: TaskContext, dependencies: WorkflowDependencies
 ) -> int:
     _require_cpp_source(context)
-    compiler = detect_compiler(
-        dependencies.environ, dependencies.runner, dependencies.which
-    )
-    submission_path = context.build_dir / "submission.cpp"
-    binary_path = context.build_dir / "submission-main"
-    library_dir = context.repository_root / "library"
-    bundle_environment = dict(dependencies.environ)
-    bundle_environment["CXX"] = compiler.executable
-
-    bundle_cpp(
-        source_path=context.source_path,
-        output_path=submission_path,
-        working_dir=context.task_dir,
-        library_dir=library_dir,
-        runner=dependencies.runner,
-        environment=bundle_environment,
-    )
-    compile_cpp(
-        source_path=submission_path,
-        output_path=binary_path,
-        working_dir=context.task_dir,
-        compiler=compiler,
-        mode=BuildMode.RELEASE,
-        library_dir=library_dir,
-        runner=dependencies.runner,
-    )
-    sample_returncode = run_samples(
-        binary_path, context.test_dir, context.task_dir, dependencies.runner
-    )
-    if sample_returncode != 0:
-        return sample_returncode
-
     if not dependencies.stdin_isatty():
         raise WorkflowError("submission requires an interactive terminal")
+    submission_path = _require_fresh_submission(context)
 
     print(f"Contest: {context.contest_id}")
     print(f"Task: {context.task_id}")

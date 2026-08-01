@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import subprocess
 from typing import Iterator
@@ -68,6 +69,73 @@ def submission_context(tmp_path: Path) -> TaskContext:
         test_dir=test_dir,
         build_dir=repository_root / ".atcoder-local/build/abc999/abc999_a",
     )
+
+
+def set_mtime(path: Path, value: int) -> None:
+    path.touch(exist_ok=True)
+    os.utime(path, ns=(value, value))
+
+
+def test_submit_rejects_missing_artifact_before_prompt(tmp_path: Path) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+
+    with pytest.raises(WorkflowError, match=r"run acc test first"):
+        run_submit(context, submit_dependencies(events))
+
+    assert events == []
+
+
+@pytest.mark.parametrize("newer_input", ["source", "library"])
+def test_submit_rejects_artifact_older_than_submission_input(
+    tmp_path: Path,
+    newer_input: str,
+) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+    submission = context.build_dir / "submission.cpp"
+    submission.parent.mkdir(parents=True, exist_ok=True)
+    header = context.repository_root / "library/atcoder_local/core.hpp"
+    set_mtime(context.source_path, 100)
+    set_mtime(header, 100)
+    set_mtime(submission, 200)
+    set_mtime(context.source_path if newer_input == "source" else header, 300)
+
+    with pytest.raises(WorkflowError, match=r"stale.*run acc test first"):
+        run_submit(context, submit_dependencies(events))
+
+    assert events == []
+
+
+def test_submit_accepts_artifact_newer_than_source_and_library(
+    tmp_path: Path,
+) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+    submission = context.build_dir / "submission.cpp"
+    submission.parent.mkdir(parents=True, exist_ok=True)
+    header = context.repository_root / "library/atcoder_local/core.hpp"
+    set_mtime(context.source_path, 100)
+    set_mtime(header, 100)
+    set_mtime(submission, 200)
+
+    assert run_submit(context, submit_dependencies(events)) == 0
+    assert events == ["prompt", "submit"]
+
+
+def test_submit_rejects_missing_library_before_prompt(tmp_path: Path) -> None:
+    context = submission_context(tmp_path)
+    events: list[str] = []
+    submission = context.build_dir / "submission.cpp"
+    submission.parent.mkdir(parents=True, exist_ok=True)
+    submission.write_text("bundled source\n", encoding="utf-8")
+    library_dir = context.repository_root / "library"
+    library_dir.rename(context.repository_root / "library-hidden")
+
+    with pytest.raises(WorkflowError, match=r"library directory"):
+        run_submit(context, submit_dependencies(events))
+
+    assert events == []
 
 
 def unused_runner(
@@ -159,50 +227,16 @@ def submit_dependencies(
 
 
 @contextmanager
-def patched_submit_stages(
-    events: list[str],
-    *,
-    bundle_error: WorkflowError | None = None,
-    compile_error: WorkflowError | None = None,
-    sample_returncode: int = 0,
-) -> Iterator[tuple[Mock, Mock, Mock]]:
-    submission = CONTEXT.build_dir / "submission.cpp"
-    binary = CONTEXT.build_dir / "submission-main"
-
-    def bundle_stage(**kwargs: object) -> Path:
-        del kwargs
-        events.append("bundle")
-        if bundle_error is not None:
-            raise bundle_error
-        return submission
-
-    def compile_stage(**kwargs: object) -> Path:
-        del kwargs
-        events.append("compile")
-        if compile_error is not None:
-            raise compile_error
-        return binary
-
-    def sample_stage(*args: object, **kwargs: object) -> int:
-        del args, kwargs
-        events.append("samples")
-        return sample_returncode
-
-    with (
-        patch(
-            "tools.atcoder_workflow.commands.detect_compiler", return_value=GCC15
-        ),
-        patch(
-            "tools.atcoder_workflow.commands.bundle_cpp", side_effect=bundle_stage
-        ) as bundle,
-        patch(
-            "tools.atcoder_workflow.commands.compile_cpp", side_effect=compile_stage
-        ) as compile_,
-        patch(
-            "tools.atcoder_workflow.commands.run_samples", side_effect=sample_stage
-        ) as samples,
-    ):
-        yield bundle, compile_, samples
+def patched_fresh_submission(
+    context: TaskContext = CONTEXT,
+) -> Iterator[Path]:
+    submission = context.build_dir / "submission.cpp"
+    with patch(
+        "tools.atcoder_workflow.commands._require_fresh_submission",
+        return_value=submission,
+    ) as validate:
+        yield submission
+    validate.assert_called_once_with(context)
 
 
 @contextmanager
@@ -476,39 +510,18 @@ def test_submit_rejects_unsupported_source_before_any_stage() -> None:
     assert events == []
 
 
-def test_submit_runs_all_gates_in_order_with_verified_artifacts(
+def test_submit_displays_verified_artifact_before_prompt(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events)
     submission = CONTEXT.build_dir / "submission.cpp"
-    binary = CONTEXT.build_dir / "submission-main"
 
-    with patched_submit_stages(events) as (bundle, compile_, samples):
+    with patched_fresh_submission():
         result = run_submit(CONTEXT, dependencies)
 
     assert result == 0
-    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
-    bundle.assert_called_once_with(
-        source_path=CONTEXT.source_path,
-        output_path=submission,
-        working_dir=CONTEXT.task_dir,
-        library_dir=CONTEXT.repository_root / "library",
-        runner=dependencies.runner,
-        environment={"CXX": GCC15.executable},
-    )
-    compile_.assert_called_once_with(
-        source_path=submission,
-        output_path=binary,
-        working_dir=CONTEXT.task_dir,
-        compiler=GCC15,
-        mode=BuildMode.RELEASE,
-        library_dir=CONTEXT.repository_root / "library",
-        runner=dependencies.runner,
-    )
-    samples.assert_called_once_with(
-        binary, CONTEXT.test_dir, CONTEXT.task_dir, dependencies.runner
-    )
+    assert events == ["prompt", "submit"]
     assert capsys.readouterr().out == (
         "Contest: abc999\n"
         "Task: abc999_a\n"
@@ -516,130 +529,32 @@ def test_submit_runs_all_gates_in_order_with_verified_artifacts(
     )
 
 
-def test_submit_propagates_selected_compiler_to_production_bundle(
-    tmp_path: Path,
-) -> None:
-    repository_root = tmp_path / "repo"
-    task_dir = repository_root / "contests/abc999/a"
-    source_path = task_dir / "main.cpp"
-    test_dir = task_dir / "test"
-    build_dir = repository_root / ".atcoder-local/build/abc999/abc999_a"
-    test_dir.mkdir(parents=True)
-    source_path.write_text("int main() {}\n", encoding="utf-8")
-    context = TaskContext(
-        repository_root=repository_root,
-        contest_id="abc999",
-        task_id="abc999_a",
-        task_label="A",
-        contest_dir=task_dir.parent,
-        task_dir=task_dir,
-        source_path=source_path,
-        test_dir=test_dir,
-        build_dir=build_dir,
-    )
-    environment = {
-        "PATH": "/custom/bin",
-        "LANG": "C.UTF-8",
-        "ATCODER_LOCAL_WRAPPER": "1",
-    }
-    calls: list[
-        tuple[
-            list[str],
-            Path | str | None,
-            dict[str, str] | None,
-            bool,
-        ]
-    ] = []
-
-    def runner(
-        argv: Sequence[str],
-        *,
-        cwd: Path | str | None = None,
-        env: Mapping[str, str] | None = None,
-        capture_output: bool = False,
-    ) -> subprocess.CompletedProcess[str]:
-        calls.append(
-            (list(argv), cwd, None if env is None else dict(env), capture_output)
-        )
-        return subprocess.CompletedProcess(argv, 0, "bundled source\n", "")
-
-    dependencies = WorkflowDependencies(
-        runner=runner,
-        environ=environment,
-        which=lambda name: None,
-        input_fn=lambda prompt: "",
-        stdin_isatty=lambda: False,
-    )
-    with (
-        patch(
-            "tools.atcoder_workflow.commands.detect_compiler",
-            return_value=GCC15,
-        ),
-        patch(
-            "tools.atcoder_workflow.commands.compile_cpp",
-            return_value=build_dir / "submission-main",
-        ),
-        patch("tools.atcoder_workflow.commands.run_samples", return_value=23),
-    ):
-        result = run_submit(context, dependencies)
-
-    assert result == 23
-    assert calls == [
-        (
-            [
-                "oj-bundle",
-                "-I",
-                str(repository_root / "library"),
-                str(source_path),
-            ],
-            task_dir,
-            {**environment, "CXX": GCC15.executable},
-            True,
-        )
-    ]
-
-
-@pytest.mark.parametrize("failed_stage", ["bundle", "compile", "samples"])
-def test_submit_stops_after_each_failed_verification_gate(
-    failed_stage: str,
-) -> None:
+def test_submit_never_builds_or_runs_samples() -> None:
     events: list[str] = []
-    dependencies = submit_dependencies(events)
-    bundle_error = WorkflowError("bundle failed") if failed_stage == "bundle" else None
-    compile_error = (
-        WorkflowError("compile failed") if failed_stage == "compile" else None
-    )
-    sample_returncode = 17 if failed_stage == "samples" else 0
-
-    with patched_submit_stages(
-        events,
-        bundle_error=bundle_error,
-        compile_error=compile_error,
-        sample_returncode=sample_returncode,
+    with (
+        patched_fresh_submission(),
+        patch("tools.atcoder_workflow.commands.detect_compiler") as detect,
+        patch("tools.atcoder_workflow.commands.bundle_cpp") as bundle,
+        patch("tools.atcoder_workflow.commands.compile_cpp") as compile_,
+        patch("tools.atcoder_workflow.commands.run_samples") as samples,
     ):
-        if failed_stage in {"bundle", "compile"}:
-            with pytest.raises(WorkflowError, match=f"{failed_stage} failed"):
-                run_submit(CONTEXT, dependencies)
-        else:
-            assert run_submit(CONTEXT, dependencies) == sample_returncode
+        assert run_submit(CONTEXT, submit_dependencies(events)) == 0
 
-    expected = {
-        "bundle": ["bundle"],
-        "compile": ["bundle", "compile"],
-        "samples": ["bundle", "compile", "samples"],
-    }
-    assert events == expected[failed_stage]
+    detect.assert_not_called()
+    bundle.assert_not_called()
+    compile_.assert_not_called()
+    samples.assert_not_called()
+    assert events == ["prompt", "submit"]
 
 
 def test_submit_rejects_non_tty_before_prompt_or_submission() -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events, tty=False)
 
-    with patched_submit_stages(events):
-        with pytest.raises(WorkflowError, match="interactive terminal"):
-            run_submit(CONTEXT, dependencies)
+    with pytest.raises(WorkflowError, match="interactive terminal"):
+        run_submit(CONTEXT, dependencies)
 
-    assert events == ["bundle", "compile", "samples"]
+    assert events == []
 
 
 @pytest.mark.parametrize("answer", ["", "n", "no", "anything else"])
@@ -647,10 +562,10 @@ def test_submit_defaults_to_no_and_rejects_other_answers(answer: str) -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events, answer=answer)
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         assert run_submit(CONTEXT, dependencies) == 1
 
-    assert events == ["bundle", "compile", "samples", "prompt"]
+    assert events == ["prompt"]
 
 
 @pytest.mark.parametrize("answer", ["y", "Y", "yes", "YES", "  YeS  "])
@@ -658,32 +573,32 @@ def test_submit_accepts_only_y_or_yes_case_insensitively(answer: str) -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events, answer=answer)
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         assert run_submit(CONTEXT, dependencies) == 0
 
-    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
+    assert events == ["prompt", "submit"]
 
 
 def test_submit_uses_raw_acc_with_full_task_id_and_propagates_failure() -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events, submit_returncode=42)
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         result = run_submit(CONTEXT, dependencies)
 
     assert result == 42
-    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
+    assert events == ["prompt", "submit"]
 
 
 def test_submit_has_no_fallback_when_raw_acc_is_unavailable() -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events, raw_acc=None)
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         with pytest.raises(WorkflowError, match="acc executable"):
             run_submit(CONTEXT, dependencies)
 
-    assert events == ["bundle", "compile", "samples", "prompt"]
+    assert events == ["prompt"]
 
 
 def test_submit_process_receives_exact_argv_and_working_directory() -> None:
@@ -710,7 +625,7 @@ def test_submit_process_receives_exact_argv_and_working_directory() -> None:
         stdin_isatty=lambda: True,
     )
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         result = run_submit(CONTEXT, dependencies)
 
     assert result == 31
@@ -758,7 +673,7 @@ def test_submit_normalizes_raw_acc_spawn_oserror_without_retry_or_fallback() -> 
     )
     submission = CONTEXT.build_dir / "submission.cpp"
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         with pytest.raises(WorkflowError) as raised:
             run_submit(CONTEXT, dependencies)
 
@@ -779,7 +694,7 @@ def test_submit_normalizes_raw_acc_spawn_oserror_without_retry_or_fallback() -> 
         )
     ]
     locate.assert_called_once_with("acc")
-    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
+    assert events == ["prompt", "submit"]
 
 
 @pytest.mark.parametrize("control_flow", [KeyboardInterrupt(), SystemExit(9)])
@@ -807,12 +722,12 @@ def test_submit_process_control_flow_exceptions_propagate(
         stdin_isatty=lambda: True,
     )
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         with pytest.raises(type(control_flow)) as raised:
             run_submit(CONTEXT, dependencies)
 
     assert raised.value is control_flow
-    assert events == ["bundle", "compile", "samples", "prompt", "submit"]
+    assert events == ["prompt", "submit"]
 
 
 def test_submit_prompt_names_full_task_and_bundled_file() -> None:
@@ -833,7 +748,7 @@ def test_submit_prompt_names_full_task_and_bundled_file() -> None:
         stdin_isatty=base.stdin_isatty,
     )
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         assert run_submit(CONTEXT, dependencies) == 1
 
     assert prompts == [
@@ -856,12 +771,12 @@ def test_submit_normalizes_interrupted_confirmation_without_running_acc(
         stdin_isatty=base.stdin_isatty,
     )
 
-    with patched_submit_stages(events):
+    with patched_fresh_submission():
         with pytest.raises(WorkflowError, match="confirmation.*interrupted"):
             run_submit(CONTEXT, dependencies)
 
     locate.assert_not_called()
-    assert events == ["bundle", "compile", "samples"]
+    assert events == []
 
 
 def test_cli_dispatches_submit_and_propagates_raw_exit_code() -> None:
