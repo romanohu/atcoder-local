@@ -11,11 +11,6 @@ from .context import TaskContext
 from .cpp import bundle_cpp, compile_cpp, run_binary, run_samples
 from .runner import ProcessRunner
 
-try:
-    from .. import push_guard
-except ImportError:  # Direct execution through tools/acc_wrapper.py.
-    import push_guard
-
 
 ACL_VERSION = "v1.6"
 ACL_COMMIT = "864245a00b00dd008d1abfdc239618fdb7d139da"
@@ -41,7 +36,6 @@ class WorkflowDependencies:
     which: Callable[[str], str | None]
     input_fn: Callable[[str], str]
     stdin_isatty: Callable[[], bool]
-    guard_is_installed: Callable[[Path], bool] | None = None
 
 
 def collect_doctor_checks(
@@ -55,7 +49,6 @@ def collect_doctor_checks(
         _executable_check("oj-bundle", "oj-bundle", dependencies),
         _compiler_check(dependencies),
         _acl_check(repository_root),
-        _push_guard_check(repository_root, dependencies),
         _shell_wrapper_check(repository_root, dependencies),
     ]
     return checks
@@ -126,19 +119,6 @@ def _acl_check(root: Path) -> DoctorCheck:
             "acl", CheckStatus.ERROR, f"required file is missing: {missing[0]}"
         )
     return DoctorCheck("acl", CheckStatus.OK, f"ACL {ACL_VERSION} and local headers")
-
-
-def _push_guard_check(
-    root: Path, dependencies: WorkflowDependencies
-) -> DoctorCheck:
-    checker = dependencies.guard_is_installed or push_guard.guard_is_installed
-    try:
-        installed = checker(root)
-    except Exception as error:
-        return DoctorCheck("push-guard", CheckStatus.ERROR, str(error))
-    if not installed:
-        return DoctorCheck("push-guard", CheckStatus.ERROR, "not installed")
-    return DoctorCheck("push-guard", CheckStatus.OK, "installed")
 
 
 def _shell_wrapper_check(

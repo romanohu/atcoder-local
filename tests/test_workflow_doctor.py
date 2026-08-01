@@ -44,7 +44,6 @@ def _dependencies(
     missing: set[str] | None = None,
     compiler: str = GCC15,
     marker: str | None = "1",
-    guard_installed: bool = True,
 ) -> SimpleNamespace:
     unavailable = set() if missing is None else missing
     executables = {
@@ -79,7 +78,6 @@ def _dependencies(
         which=which,
         input_fn=lambda prompt: prompt,
         stdin_isatty=lambda: True,
-        guard_is_installed=lambda root: guard_installed,
     )
 
 
@@ -148,16 +146,6 @@ def test_doctor_errors_when_a_local_header_is_missing(tmp_path: Path) -> None:
     assert check.status is CheckStatus.ERROR
 
 
-def test_doctor_errors_when_push_guard_is_not_installed(tmp_path: Path) -> None:
-    _prepare_root(tmp_path)
-
-    check = _check(
-        tmp_path, _dependencies(guard_installed=False), "push-guard"
-    )
-
-    assert check.status is CheckStatus.ERROR
-
-
 @pytest.mark.parametrize("wrapper", ["acc-wrapper.bash", "acc-wrapper.zsh"])
 def test_doctor_errors_when_a_shell_wrapper_is_missing(
     tmp_path: Path, wrapper: str
@@ -190,7 +178,6 @@ def test_doctor_reports_all_healthy_checks_in_stable_order(tmp_path: Path) -> No
         "oj-bundle",
         "compiler",
         "acl",
-        "push-guard",
         "shell-wrapper",
     ]
     assert all(check.status is CheckStatus.OK for check in checks)
@@ -205,7 +192,7 @@ def test_run_doctor_prints_every_check_and_fails_on_error(
 
     lines = capsys.readouterr().out.splitlines()
     assert result == 1
-    assert len(lines) == 8
+    assert len(lines) == 7
     assert any(line.startswith("[error] oj:") for line in lines)
 
 
@@ -232,20 +219,15 @@ def test_cli_doctor_uses_nearest_repository_root_from_nested_directory(
     _prepare_root(root)
     nested = root / "contests" / "abc999" / "a"
     nested.mkdir(parents=True)
-    checked_roots: list[Path] = []
     dependencies = _dependencies()
-    dependencies.guard_is_installed = (
-        lambda actual_root: checked_roots.append(actual_root) or True
-    )
     with patch("tools.atcoder_workflow.cli.resolve_task_context") as resolve:
         result = workflow_main(["doctor"], cwd=nested, dependencies=dependencies)
 
     output = capsys.readouterr()
     assert result == 0
-    assert len(output.out.splitlines()) == 8
+    assert len(output.out.splitlines()) == 7
     assert all(line.startswith("[ok]") for line in output.out.splitlines())
     assert output.err == ""
-    assert checked_roots == [root]
     resolve.assert_not_called()
 
 
