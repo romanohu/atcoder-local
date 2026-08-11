@@ -2,7 +2,7 @@
 
 ## 概要
 
-このリポジトリは、AtCoder の C++ 解答をローカルで作成、ビルド、実行、サンプルテスト、提出するための環境です。`atcoder-cli` の `acc` コマンドをシェルラッパーで拡張し、ローカル開発用のコマンドを提供します。
+このリポジトリは、AtCoder の C++ 解答をローカルで作成、ビルド、実行、サンプルテスト、提出するための環境です。インストール可能な `acc` コマンドで `atcoder-cli` を拡張し、ローカル開発用のコマンドを提供します。
 
 ## 必要なもの
 
@@ -15,7 +15,7 @@
 
 GNU GCC 15 を推奨します。別の C++23 対応コンパイラもビルドには使用できますが、`acc doctor` は警告を表示します。環境に GNU GCC が存在するかは `acc doctor` とコンパイラの `--version` で確認してください。
 
-## `uv sync` と atcoder-cli のインストール
+## セットアップ
 
 リポジトリをクローンし、リポジトリルートで依存関係をインストールします。
 
@@ -24,9 +24,16 @@ git clone <url>
 cd atcoder-local
 uv sync --group dev
 npm install -g atcoder-cli@2.2.0
+uv tool install --editable .
 ```
 
-`uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。
+`uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。`uv tool install --editable .` の後は、新しいシェルでもすぐに `acc` を使えます。
+
+パッケージのメタデータまたは依存関係を更新した後は、次を実行してインストール済みコマンドを更新します。
+
+```sh
+uv tool install --force --editable .
+```
 
 ## atcoder-cli の設定
 
@@ -46,9 +53,9 @@ AtCoder へのログイン情報は `aclogin` で設定します。ブラウザ�
 uv run aclogin
 ```
 
-## bash / zsh ラッパーの有効化
+## bash / zsh の互換用ラッパー
 
-使用するシェルに合わせて、リポジトリルートでどちらか一方を実行します。
+通常は前節の `uv tool install --editable .` を使用してください。既存のシェル設定との互換性のために、使用するシェルに合わせてリポジトリルートでどちらか一方を `source` することもできます。
 
 zsh:
 
@@ -62,7 +69,7 @@ bash:
 source "$(pwd)/tools/acc-wrapper.bash"
 ```
 
-ラッパーは現在のシェルセッションだけで有効です。セットアップコマンドとラッパーは `.zshrc` や `.bashrc` を自動では変更しません。常時使用する場合は、ユーザーが対応する `source` 行を `~/.zshrc` または `~/.bashrc` へ手動で追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。
+ラッパーは現在のシェルセッションだけで有効です。セットアップコマンドとラッパーは `.zshrc` や `.bashrc` を自動では変更しません。常時使用する場合は、ユーザーが対応する `source` 行を `~/.zshrc` または `~/.bashrc` へ手動で追加し、`$(pwd)` ではなくこのクローンの絶対パスを指定してください。インストール済みの `acc` とこの互換用ラッパーを同じシェルで併用しないでください。
 
 ## `acc doctor`
 
@@ -96,15 +103,15 @@ acc test --debug
 acc submit
 ```
 
-- `acc build` は C++23 のリリース設定で `main.cpp` をビルドします。
-- `acc run` はリリースビルド後にプログラムを実行します。
-- `acc test` と `acc test --debug` は `main.cpp` とローカルヘッダーを `submission.cpp` へ bundle し、その単一ファイルを各モードでコンパイルしてサンプルを実行します。`submission.cpp` はサンプルがすべて成功した場合だけ公開されます。
+- `acc build` は C++23 のリリース設定で `main.cpp` をビルドします。ダウンロード済みサンプルは必要ありません。
+- `acc run` はリリースビルド後にプログラムを実行します。ダウンロード済みサンプルは必要ありません。
+- `acc test` と `acc test --debug` は `main.cpp` とローカルヘッダーを `.submission.cpp.pending` へ bundle し、その単一ファイルを各モードでコンパイルしてサンプルを実行します。サンプルがすべて成功した後、各タスクディレクトリの `submission.cpp` として公開されます。サンプルテストがない場合は、bundle とコンパイルの成功後に警告を表示し、サンプルテストを省略して `submission.cpp` を公開します。
 - `acc test --debug` では `LOCAL`、AddressSanitizer、UndefinedBehaviorSanitizer を有効にします。
-- `acc submit` は bundle、コンパイル、サンプルテストを実行しません。先に `acc test` を実行して生成した、新しい `submission.cpp` だけを確認後に提出します。
+- `acc submit` は bundle、コンパイル、サンプルテストを実行しません。先に `acc test` を実行して生成した、各タスクディレクトリの新しい `submission.cpp` だけを確認後に提出します。
 
 `acc submit` は対話端末専用です。確認は既定で No であり、`y` または `yes` を明示的に入力した場合だけ `atcoder-cli` へ提出を渡します。空入力、その他の入力、確認の中断では提出しません。
 
-ビルド生成物と提出用ファイルは `.atcoder-local/` 配下に置かれ、Git の管理対象にはなりません。`main.cpp` または `library/` 配下の任意のファイルを変更すると `submission.cpp` は古い状態になるため、提出前にもう一度 `acc test` を実行してください。
+ビルドバイナリは `.atcoder-local/build/` 配下に置かれ、Git の管理対象にはなりません。生成された `submission.cpp` と `.submission.cpp.pending` は `contests/` 配下で Git の管理対象から除外されます。`main.cpp` または `library/` 配下の任意のファイルを変更すると `submission.cpp` は古い状態になるため、提出前にもう一度 `acc test` を実行してください。
 
 ## リポジトリルートからの `-c` / `-t` 指定
 

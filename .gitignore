@@ -19,3 +19,7 @@ a.out
 !contests/*/
 !contests/README.md
 !contests/**/*.cpp
+
+# Generated submission artifacts
+contests/**/submission.cpp
+contests/**/.submission.cpp.pending

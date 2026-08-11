@@ -267,10 +267,31 @@ def test_readme_documents_test_owned_submission_artifact() -> None:
 
     assert "`acc test` と `acc test --debug` は" in readme
     assert "`submission.cpp`" in readme
-    assert "サンプルがすべて成功した場合だけ" in readme
+    assert "各タスクディレクトリの `submission.cpp`" in readme
+    assert "サンプルテストがない場合" in readme
+    assert "サンプルテストを省略" in readme
     assert "`acc submit` は bundle、コンパイル、サンプルテストを実行しません" in readme
     assert "先に `acc test` を実行" in readme
     assert "`main.cpp` または `library/` 配下の任意のファイル" in readme
+
+
+def test_readme_documents_installed_acc_and_task_local_submission() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "uv tool install --editable ." in readme
+    assert "uv tool install --force --editable ." in readme
+    assert "各タスクディレクトリの `submission.cpp`" in readme
+    assert "サンプルテストがない場合" in readme
+    assert "サンプルテストを省略" in readme
+
+
+def test_gitignore_scopes_generated_submission_to_contests() -> None:
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    lines = {line.strip() for line in ignore.splitlines()}
+
+    assert "contests/**/submission.cpp" in lines
+    assert "contests/**/.submission.cpp.pending" in lines
+    assert "**/submission.cpp" not in lines
 
 
 def test_readme_omits_retired_features() -> None:
