@@ -107,15 +107,23 @@ def test_default_raw_acc_delegation_reports_missing_upstream(
     )
 
 
-def test_console_main_exits_with_main_return_code() -> None:
+def test_console_main_marks_installed_entry_before_dispatching() -> None:
+    observed_marker: str | None = None
+
+    def wrapped_main() -> int:
+        nonlocal observed_marker
+        observed_marker = os.environ.get("ATCODER_LOCAL_CONSOLE")
+        return 23
+
     with (
-        patch("tools.acc_wrapper.main", return_value=23) as wrapped_main,
+        patch("tools.acc_wrapper.main", side_effect=wrapped_main) as main_call,
         pytest.raises(SystemExit) as raised,
     ):
         console_main()
 
     assert raised.value.code == 23
-    wrapped_main.assert_called_once_with()
+    assert observed_marker == "1"
+    main_call.assert_called_once_with()
 
 
 def test_absolute_script_execution_delegates_raw_acc() -> None:

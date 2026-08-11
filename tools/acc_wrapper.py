@@ -44,6 +44,7 @@ def main(
 
 
 def console_main() -> NoReturn:
+    os.environ["ATCODER_LOCAL_CONSOLE"] = "1"
     raise SystemExit(main())
 
 

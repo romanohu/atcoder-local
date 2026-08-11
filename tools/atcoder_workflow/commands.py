@@ -136,13 +136,18 @@ def _shell_wrapper_check(
         return DoctorCheck(
             "shell-wrapper", CheckStatus.ERROR, f"wrapper is missing: {missing[0]}"
         )
-    if dependencies.environ.get("ATCODER_LOCAL_WRAPPER") != "1":
+    if (
+        dependencies.environ.get("ATCODER_LOCAL_WRAPPER") != "1"
+        and dependencies.environ.get("ATCODER_LOCAL_CONSOLE") != "1"
+    ):
         return DoctorCheck(
             "shell-wrapper",
             CheckStatus.ERROR,
             "current shell is not using the repository wrapper",
         )
-    return DoctorCheck("shell-wrapper", CheckStatus.OK, "bash/zsh wrapper active")
+    return DoctorCheck(
+        "shell-wrapper", CheckStatus.OK, "installed acc entry point or bash/zsh wrapper active"
+    )
 
 
 def run_build(

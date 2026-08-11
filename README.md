@@ -73,7 +73,7 @@ source "$(pwd)/tools/acc-wrapper.bash"
 
 ## `acc doctor`
 
-ラッパーを有効にした後、リポジトリ内で診断を実行します。
+インストール済みの `acc` で `acc doctor` を実行します。互換用ラッパーを使用する場合も、同じコマンドで診断できます。
 
 ```sh
 acc doctor
@@ -133,7 +133,7 @@ AtCoder はソースコード提出に CAPTCHA を導入しています。公式
 
 ## トラブルシューティング
 
-- `acc doctor` が `current shell is not using the repository wrapper` と表示する場合は、使用中のシェルに対応する `tools/acc-wrapper.zsh` または `tools/acc-wrapper.bash` をもう一度 `source` してください。
+- `acc doctor` が `current shell is not using the repository wrapper` と表示する場合は、インストール済みの `acc` を使用しているか確認してください。互換用ラッパーを選んでいる場合は、使用中のシェルに対応する `tools/acc-wrapper.zsh` または `tools/acc-wrapper.bash` をもう一度 `source` してください。
 - `no C++23 compiler found` の場合は C++23 対応コンパイラをインストールし、必要ならその実行ファイルを `CXX` に指定してから再診断してください。コンパイラが未導入の環境で GNU GCC が利用できるとは仮定しないでください。
 - `oj-bundle` が GNU C++ コンパイラを要求して失敗する場合は、GNU GCC の導入状況と `CXX` を確認してから `acc test` を再実行してください。
 - リポジトリルートで `acc build` などがタスクを特定できない場合は、`-c` と `-t` を両方指定してください。

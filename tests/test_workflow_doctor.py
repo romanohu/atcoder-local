@@ -44,6 +44,7 @@ def _dependencies(
     missing: set[str] | None = None,
     compiler: str = GCC15,
     marker: str | None = "1",
+    installed_marker: str | None = None,
 ) -> SimpleNamespace:
     unavailable = set() if missing is None else missing
     executables = {
@@ -72,6 +73,8 @@ def _dependencies(
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     environ = {} if marker is None else {"ATCODER_LOCAL_WRAPPER": marker}
+    if installed_marker is not None:
+        environ["ATCODER_LOCAL_CONSOLE"] = installed_marker
     return SimpleNamespace(
         runner=runner,
         environ=environ,
@@ -164,6 +167,16 @@ def test_doctor_errors_when_current_shell_did_not_set_marker(tmp_path: Path) -> 
     check = _check(tmp_path, _dependencies(marker=None), "shell-wrapper")
 
     assert check.status is CheckStatus.ERROR
+
+
+def test_doctor_accepts_installed_console_entry_marker(tmp_path: Path) -> None:
+    _prepare_root(tmp_path)
+
+    checks = collect_doctor_checks(
+        tmp_path, _dependencies(marker=None, installed_marker="1")
+    )
+
+    assert all(check.status is CheckStatus.OK for check in checks)
 
 
 def test_doctor_reports_all_healthy_checks_in_stable_order(tmp_path: Path) -> None:

@@ -280,6 +280,7 @@ def test_readme_documents_installed_acc_and_task_local_submission() -> None:
 
     assert "uv tool install --editable ." in readme
     assert "uv tool install --force --editable ." in readme
+    assert "インストール済みの `acc` で `acc doctor`" in readme
     assert "各タスクディレクトリの `submission.cpp`" in readme
     assert "サンプルテストがない場合" in readme
     assert "サンプルテストを省略" in readme
