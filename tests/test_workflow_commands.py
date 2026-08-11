@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
@@ -73,6 +74,10 @@ def submission_context(tmp_path: Path) -> TaskContext:
     )
 
 
+def without_samples(context: TaskContext) -> TaskContext:
+    return replace(context, test_dir=None)
+
+
 def set_mtime(path: Path, value: int) -> None:
     path.touch(exist_ok=True)
     os.utime(path, ns=(value, value))
@@ -95,7 +100,7 @@ def test_submit_rejects_artifact_older_than_submission_input(
 ) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     submission.parent.mkdir(parents=True, exist_ok=True)
     header = context.repository_root / "library/atcoder_local/core.hpp"
     set_mtime(context.source_path, 100)
@@ -114,7 +119,7 @@ def test_submit_accepts_artifact_newer_than_source_and_library(
 ) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     submission.parent.mkdir(parents=True, exist_ok=True)
     header = context.repository_root / "library/atcoder_local/core.hpp"
     set_mtime(context.source_path, 100)
@@ -128,7 +133,7 @@ def test_submit_accepts_artifact_newer_than_source_and_library(
 def test_submit_rejects_missing_library_before_prompt(tmp_path: Path) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     submission.parent.mkdir(parents=True, exist_ok=True)
     submission.write_text("bundled source\n", encoding="utf-8")
     library_dir = context.repository_root / "library"
@@ -145,7 +150,7 @@ def test_submit_rejects_unreadable_library_input_before_prompt(
 ) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     submission.parent.mkdir(parents=True, exist_ok=True)
     unreadable = context.repository_root / "library/atcoder_local/unreadable.hpp"
     set_mtime(context.source_path, 100)
@@ -191,7 +196,7 @@ def test_submit_rejects_unreadable_library_directory_before_prompt(
 ) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     submission.parent.mkdir(parents=True, exist_ok=True)
     restricted = context.repository_root / "library/atcoder_local/restricted"
     restricted_header = restricted / "hidden.hpp"
@@ -326,13 +331,14 @@ def submit_dependencies(
 def patched_fresh_submission(
     context: TaskContext = CONTEXT,
 ) -> Iterator[Path]:
-    submission = context.build_dir / "submission.cpp"
+    submission = context.submission_path
     with patch(
         "tools.atcoder_workflow.commands._require_fresh_submission",
         return_value=submission,
     ) as validate:
         yield submission
-    validate.assert_called_once_with(context)
+    validate.assert_called_once()
+    assert validate.call_args.args[0].submission_path == submission
 
 
 @contextmanager
@@ -410,6 +416,33 @@ def test_run_build_uses_release_output_and_repository_library() -> None:
     )
 
 
+def test_build_does_not_require_sample_directory() -> None:
+    context = without_samples(CONTEXT)
+    with patch(
+        "tools.atcoder_workflow.commands.detect_compiler", return_value=GCC15
+    ), patch(
+        "tools.atcoder_workflow.commands.compile_cpp",
+        return_value=context.build_dir / "main",
+    ) as compile_:
+        assert run_build(context, DEPENDENCIES) == context.build_dir / "main"
+
+    compile_.assert_called_once()
+
+
+def test_run_does_not_require_sample_directory() -> None:
+    context = without_samples(CONTEXT)
+    binary = context.build_dir / "main"
+    with patch(
+        "tools.atcoder_workflow.commands.run_build", return_value=binary
+    ) as build, patch(
+        "tools.atcoder_workflow.commands.run_binary", return_value=19
+    ) as run:
+        assert run_program(context, DEPENDENCIES) == 19
+
+    build.assert_called_once_with(context, DEPENDENCIES, mode=BuildMode.RELEASE)
+    run.assert_called_once_with(binary, context.task_dir, DEPENDENCIES.runner)
+
+
 def test_run_program_builds_before_running_and_propagates_exit_code() -> None:
     events: list[str] = []
     binary = CONTEXT.build_dir / "main"
@@ -436,8 +469,8 @@ def test_run_tests_bundles_compiles_samples_then_publishes_release_artifact(
 ) -> None:
     context = submission_context(tmp_path)
     events: list[str] = []
-    published = context.build_dir / "submission.cpp"
-    candidate = context.build_dir / ".submission.cpp.pending"
+    published = context.submission_path
+    candidate = context.task_dir / ".submission.cpp.pending"
     binary = context.build_dir / "submission-main"
 
     def bundle_stage(**kwargs: object) -> Path:
@@ -491,7 +524,7 @@ def test_run_tests_compiler_failure_invalidates_previous_submission(
     tmp_path: Path,
 ) -> None:
     context = submission_context(tmp_path)
-    published = context.build_dir / "submission.cpp"
+    published = context.submission_path
     published.parent.mkdir(parents=True, exist_ok=True)
     published.write_text("old verified source\n", encoding="utf-8")
 
@@ -505,6 +538,27 @@ def test_run_tests_compiler_failure_invalidates_previous_submission(
     assert not published.exists()
 
 
+@pytest.mark.parametrize("debug", [False, True])
+def test_run_tests_without_samples_warns_and_publishes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    debug: bool,
+) -> None:
+    context = without_samples(submission_context(tmp_path))
+    published = context.submission_path
+
+    with patched_test_stages(context) as (events, _, _, samples):
+        assert run_tests(context, DEPENDENCIES, debug=debug) == 0
+
+    assert events == ["bundle", "compile"]
+    samples.assert_not_called()
+    assert published.read_text(encoding="utf-8") == "bundled source\n"
+    assert capsys.readouterr().err == (
+        "[warning] sample tests are unavailable; "
+        "submission.cpp was not sample-tested\n"
+    )
+
+
 def test_run_tests_debug_compiles_pending_bundle_to_debug_output(
     tmp_path: Path,
 ) -> None:
@@ -514,7 +568,7 @@ def test_run_tests_debug_compiles_pending_bundle_to_debug_output(
 
     assert events == ["bundle", "compile", "samples"]
     assert compile_.call_args.kwargs["source_path"] == (
-        context.build_dir / ".submission.cpp.pending"
+        context.task_dir / ".submission.cpp.pending"
     )
     assert compile_.call_args.kwargs["output_path"] == (
         context.build_dir / "submission-main-debug"
@@ -529,8 +583,8 @@ def test_run_tests_failure_invalidates_submission_and_cleans_candidate(
     failed_stage: str,
 ) -> None:
     context = submission_context(tmp_path)
-    published = context.build_dir / "submission.cpp"
-    candidate = context.build_dir / ".submission.cpp.pending"
+    published = context.submission_path
+    candidate = context.task_dir / ".submission.cpp.pending"
     published.parent.mkdir(parents=True, exist_ok=True)
     published.write_text("old verified source\n", encoding="utf-8")
 
@@ -611,7 +665,7 @@ def test_submit_displays_verified_artifact_before_prompt(
 ) -> None:
     events: list[str] = []
     dependencies = submit_dependencies(events)
-    submission = CONTEXT.build_dir / "submission.cpp"
+    submission = CONTEXT.submission_path
 
     with patched_fresh_submission():
         result = run_submit(CONTEXT, dependencies)
@@ -640,6 +694,16 @@ def test_submit_never_builds_or_runs_samples() -> None:
     bundle.assert_not_called()
     compile_.assert_not_called()
     samples.assert_not_called()
+    assert events == ["prompt", "submit"]
+
+
+def test_submit_accepts_fresh_artifact_without_samples() -> None:
+    context = without_samples(CONTEXT)
+    events: list[str] = []
+
+    with patched_fresh_submission():
+        assert run_submit(context, submit_dependencies(events)) == 0
+
     assert events == ["prompt", "submit"]
 
 
@@ -730,7 +794,7 @@ def test_submit_process_receives_exact_argv_and_working_directory() -> None:
             [
                 "/opt/homebrew/bin/acc",
                 "submit",
-                str(CONTEXT.build_dir / "submission.cpp"),
+                str(CONTEXT.submission_path),
                 "-c",
                 "abc999",
                 "-t",
@@ -767,7 +831,7 @@ def test_submit_normalizes_raw_acc_spawn_oserror_without_retry_or_fallback() -> 
         input_fn=lambda prompt: events.append("prompt") or "yes",
         stdin_isatty=lambda: True,
     )
-    submission = CONTEXT.build_dir / "submission.cpp"
+    submission = CONTEXT.submission_path
 
     with patched_fresh_submission():
         with pytest.raises(WorkflowError) as raised:
@@ -848,7 +912,7 @@ def test_submit_prompt_names_full_task_and_bundled_file() -> None:
         assert run_submit(CONTEXT, dependencies) == 1
 
     assert prompts == [
-        f"Submit abc999_a from {CONTEXT.build_dir / 'submission.cpp'}? [y/N] "
+        f"Submit abc999_a from {CONTEXT.submission_path}? [y/N] "
     ]
 
 

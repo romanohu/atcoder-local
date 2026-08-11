@@ -6,6 +6,7 @@ from enum import Enum
 import os
 from pathlib import Path
 import stat
+import sys
 
 from . import WorkflowError
 from .compiler import BuildMode, CompilerFamily, detect_compiler
@@ -185,18 +186,25 @@ def run_tests(
     debug: bool = False,
 ) -> int:
     mode = BuildMode.DEBUG if debug else BuildMode.RELEASE
-    candidate_path = context.build_dir / ".submission.cpp.pending"
-    submission_path = context.build_dir / "submission.cpp"
+    candidate_path = context.task_dir / ".submission.cpp.pending"
+    submission_path = context.submission_path
     try:
         prepared_candidate, binary_path = _prepare_submission_candidate(
             context, dependencies, mode
         )
         assert prepared_candidate == candidate_path
-        sample_returncode = run_samples(
-            binary_path, context.test_dir, context.task_dir, dependencies.runner
-        )
-        if sample_returncode != 0:
-            return sample_returncode
+        if context.test_dir is None:
+            print(
+                "[warning] sample tests are unavailable; "
+                "submission.cpp was not sample-tested",
+                file=sys.stderr,
+            )
+        else:
+            sample_returncode = run_samples(
+                binary_path, context.test_dir, context.task_dir, dependencies.runner
+            )
+            if sample_returncode != 0:
+                return sample_returncode
         try:
             candidate_path.replace(submission_path)
         except OSError as error:
@@ -214,8 +222,8 @@ def _prepare_submission_candidate(
     mode: BuildMode,
 ) -> tuple[Path, Path]:
     _require_cpp_source(context)
-    submission_path = context.build_dir / "submission.cpp"
-    candidate_path = context.build_dir / ".submission.cpp.pending"
+    submission_path = context.submission_path
+    candidate_path = context.task_dir / ".submission.cpp.pending"
     binary_name = (
         "submission-main-debug" if mode is BuildMode.DEBUG else "submission-main"
     )
@@ -257,7 +265,7 @@ def _discard_generated_file(path: Path, description: str) -> None:
 
 
 def _require_fresh_submission(context: TaskContext) -> Path:
-    submission_path = context.build_dir / "submission.cpp"
+    submission_path = context.submission_path
     library_dir = context.repository_root / "library"
     if not submission_path.is_file():
         raise WorkflowError(
