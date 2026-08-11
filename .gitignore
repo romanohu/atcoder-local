@@ -23,3 +23,4 @@ a.out
 # Generated submission artifacts
 contests/**/submission.cpp
 contests/**/.submission.cpp.pending
+contests/**/..submission.cpp.pending.tmp

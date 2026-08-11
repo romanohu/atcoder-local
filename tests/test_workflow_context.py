@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -133,6 +135,92 @@ def test_rejects_source_named_generated_submission(tmp_path: Path) -> None:
         match="submit source conflicts with generated submission artifact",
     ):
         resolve_task_context(task_dir)
+
+
+def test_rejects_generated_submission_symlink_without_modifying_files(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    source = task_dir / "main.cpp"
+    external_target = root / "external-submission.cpp"
+    external_target.write_text("external target\n", encoding="utf-8")
+    submission = task_dir / "submission.cpp"
+    submission.symlink_to(external_target)
+
+    with pytest.raises(
+        WorkflowError,
+        match="generated submission artifact is a symbolic link",
+    ):
+        resolve_task_context(task_dir)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert external_target.read_text(encoding="utf-8") == "external target\n"
+    assert submission.is_symlink()
+
+
+def test_rejects_generated_submission_hard_link_to_source(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    source = task_dir / "main.cpp"
+    submission = task_dir / "submission.cpp"
+    try:
+        os.link(source, submission)
+    except OSError as error:
+        pytest.skip(f"hard links are unavailable: {error}")
+
+    with pytest.raises(
+        WorkflowError,
+        match="submit source conflicts with generated submission artifact",
+    ):
+        resolve_task_context(task_dir)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert source.samefile(submission)
+
+
+def test_rejects_case_only_source_output_collision_on_case_insensitive_filesystem(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root, submit="Submission.cpp")
+    source = task_dir / "Submission.cpp"
+    submission = task_dir / "submission.cpp"
+    try:
+        same_file = source.samefile(submission)
+    except OSError:
+        same_file = False
+    if not same_file:
+        pytest.skip("filesystem is case-sensitive")
+
+    with pytest.raises(
+        WorkflowError,
+        match="submit source conflicts with generated submission artifact",
+    ):
+        resolve_task_context(task_dir)
+
+    assert source.read_text(encoding="utf-8") == "source\n"
+
+
+def test_normalizes_source_output_identity_errors(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    submission = task_dir / "submission.cpp"
+    submission.write_text("old generated source\n", encoding="utf-8")
+
+    with patch.object(
+        Path,
+        "samefile",
+        autospec=True,
+        side_effect=PermissionError("cannot compare identities"),
+    ):
+        with pytest.raises(
+            WorkflowError,
+            match="cannot inspect generated submission artifact",
+        ) as raised:
+            resolve_task_context(task_dir)
+
+    assert isinstance(raised.value.__cause__, PermissionError)
 
 
 @pytest.mark.parametrize(

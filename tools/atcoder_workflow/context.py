@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Any
 
 from . import WorkflowError
@@ -174,12 +175,8 @@ def _build_context(
     source_path = _resolve_within_owner(
         task_dir, _directory_value(task, "submit", config_path), "submit path"
     )
-    submission_path = (task_dir / "submission.cpp").resolve()
-    if source_path == submission_path:
-        raise WorkflowError(
-            "submit source conflicts with generated submission artifact: "
-            f"{submission_path}"
-        )
+    submission_path = task_dir / "submission.cpp"
+    _validate_submission_destination(source_path, submission_path)
 
     testdir = _optional_directory_value(task, "testdir", config_path)
     test_dir: Path | None = None
@@ -245,6 +242,43 @@ def _optional_directory_value(
     if not isinstance(value, str):
         raise WorkflowError(f"task directory {key} is invalid in {config_path}")
     return value
+
+
+def _validate_submission_destination(
+    source_path: Path, submission_path: Path
+) -> None:
+    try:
+        submission_status = submission_path.lstat()
+    except FileNotFoundError:
+        submission_exists = False
+    except OSError as error:
+        raise WorkflowError(
+            f"cannot inspect generated submission artifact: {submission_path}"
+        ) from error
+    else:
+        submission_exists = True
+        if stat.S_ISLNK(submission_status.st_mode):
+            raise WorkflowError(
+                "generated submission artifact is a symbolic link: "
+                f"{submission_path}"
+            )
+
+    paths_collide = source_path == submission_path
+    if submission_exists and not paths_collide:
+        try:
+            paths_collide = source_path.samefile(submission_path)
+        except FileNotFoundError:
+            paths_collide = False
+        except OSError as error:
+            raise WorkflowError(
+                f"cannot inspect generated submission artifact: {submission_path}"
+            ) from error
+
+    if paths_collide:
+        raise WorkflowError(
+            "submit source conflicts with generated submission artifact: "
+            f"{submission_path}"
+        )
 
 
 def _safe_path_component(

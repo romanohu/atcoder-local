@@ -293,7 +293,9 @@ def test_gitignore_scopes_generated_submission_to_contests() -> None:
 
     assert "contests/**/submission.cpp" in lines
     assert "contests/**/.submission.cpp.pending" in lines
+    assert "contests/**/..submission.cpp.pending.tmp" in lines
     assert "**/submission.cpp" not in lines
+    assert "**/..submission.cpp.pending.tmp" not in lines
 
 
 def test_readme_omits_retired_features() -> None:
