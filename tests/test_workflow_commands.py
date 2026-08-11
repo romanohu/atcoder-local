@@ -282,6 +282,7 @@ def test_readme_documents_installed_acc_and_task_local_submission() -> None:
     assert "uv tool install --force ." in readme
     assert "uv tool install --editable ." not in readme
     assert "uv tool install --force --editable ." not in readme
+    assert "ラッパーのソースコードを更新した後" in readme
     assert "インストール済みの `acc` で `acc doctor`" in readme
     assert "インストール済みの `acc` または互換用ラッパー" in readme
     assert "各タスクディレクトリの `submission.cpp`" in readme

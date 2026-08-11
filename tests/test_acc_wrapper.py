@@ -107,7 +107,11 @@ def test_default_raw_acc_delegation_reports_missing_upstream(
     )
 
 
-def test_console_main_marks_installed_entry_before_dispatching() -> None:
+def test_console_main_marks_installed_entry_before_dispatching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_path = os.environ.get("PATH")
+    original_marker = os.environ.get("ATCODER_LOCAL_CONSOLE")
     observed_marker: str | None = None
 
     def wrapped_main() -> int:
@@ -115,15 +119,21 @@ def test_console_main_marks_installed_entry_before_dispatching() -> None:
         observed_marker = os.environ.get("ATCODER_LOCAL_CONSOLE")
         return 23
 
-    with (
-        patch("tools.acc_wrapper.main", side_effect=wrapped_main) as main_call,
-        pytest.raises(SystemExit) as raised,
-    ):
-        console_main()
+    with monkeypatch.context() as environment:
+        environment.setenv("PATH", original_path or "")
+        environment.setenv("ATCODER_LOCAL_CONSOLE", original_marker or "")
+        environment.delenv("ATCODER_LOCAL_CONSOLE")
+        with (
+            patch("tools.acc_wrapper.main", side_effect=wrapped_main) as main_call,
+            pytest.raises(SystemExit) as raised,
+        ):
+            console_main()
 
     assert raised.value.code == 23
     assert observed_marker == "1"
     main_call.assert_called_once_with()
+    assert os.environ.get("PATH") == original_path
+    assert os.environ.get("ATCODER_LOCAL_CONSOLE") == original_marker
 
 
 def test_console_main_prepends_runtime_bin_to_path(

@@ -36,10 +36,10 @@ def find_upstream_acc(
 def _find_npm_global_acc(
     environ: Mapping[str, str], active: Path
 ) -> str | None:
-    npm = shutil.which("npm", path=environ.get("PATH", ""))
-    if npm is None:
-        return None
     try:
+        npm = shutil.which("npm", path=environ.get("PATH", ""))
+        if npm is None:
+            return None
         completed = subprocess.run(
             [npm, "prefix", "--global"],
             check=False,
@@ -48,17 +48,23 @@ def _find_npm_global_acc(
             env=dict(environ),
             timeout=5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+        prefix = completed.stdout.strip()
+        if completed.returncode != 0 or not prefix or "\n" in prefix:
+            return None
+        prefix_path = Path(prefix).expanduser()
+        if not prefix_path.is_absolute():
+            return None
+        candidate = (prefix_path / "bin" / "acc").resolve()
+        if _is_upstream_acc(candidate, active):
+            return str(candidate)
+    except (
+        OSError,
+        RuntimeError,
+        UnicodeError,
+        ValueError,
+        subprocess.TimeoutExpired,
+    ):
         return None
-    prefix = completed.stdout.strip()
-    if completed.returncode != 0 or not prefix or "\n" in prefix:
-        return None
-    prefix_path = Path(prefix).expanduser()
-    if not prefix_path.is_absolute():
-        return None
-    candidate = (prefix_path / "bin" / "acc").resolve()
-    if _is_upstream_acc(candidate, active):
-        return str(candidate)
     return None
 
 

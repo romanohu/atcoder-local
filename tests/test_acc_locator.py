@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -27,6 +28,13 @@ def installed_wrapper(path: Path) -> Path:
     )
     path.chmod(0o755)
     return path
+
+
+def npm_search_bin(tmp_path: Path) -> Path:
+    search_bin = tmp_path / "search-bin"
+    search_bin.mkdir()
+    executable(search_bin / "npm")
+    return search_bin
 
 
 def test_skips_active_wrapper_and_returns_next_acc(tmp_path: Path) -> None:
@@ -130,5 +138,89 @@ def test_ignores_invalid_npm_global_prefix(
         encoding="utf-8",
     )
     npm.chmod(0o755)
+
+    assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
+
+
+@pytest.mark.parametrize(
+    "output",
+    ["/tmp/npm\0prefix", "~atcoder-local-no-such-user"],
+    ids=["embedded-nul", "unknown-user"],
+)
+def test_ignores_malformed_npm_global_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    search_bin = npm_search_bin(tmp_path)
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=output, stderr=""
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
+
+
+def test_ignores_undecodable_npm_global_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    search_bin = npm_search_bin(tmp_path)
+    decoding_error = UnicodeDecodeError(
+        "utf-8", b"\xff", 0, 1, "invalid start byte"
+    )
+
+    def fail_to_decode(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise decoding_error
+
+    monkeypatch.setattr(subprocess, "run", fail_to_decode)
+
+    assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [subprocess.TimeoutExpired(cmd="npm", timeout=5), OSError("cannot execute")],
+    ids=["timeout", "os-error"],
+)
+def test_ignores_npm_execution_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    search_bin = npm_search_bin(tmp_path)
+
+    def fail_to_run(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", fail_to_run)
+
+    assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
+
+
+def test_ignores_npm_candidate_resolution_oserror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    search_bin = npm_search_bin(tmp_path)
+    prefix = tmp_path / "npm-global"
+    completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=str(prefix), stderr=""
+    )
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == prefix / "bin" / "acc":
+            raise OSError("cannot resolve candidate")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(Path, "resolve", resolve)
 
     assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
