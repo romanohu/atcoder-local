@@ -43,6 +43,7 @@ CONTEXT = TaskContext(
     contest_dir=Path("/repo/contests/abc999"),
     task_dir=Path("/repo/contests/abc999/a"),
     source_path=Path("/repo/contests/abc999/a/main.cpp"),
+    submission_path=Path("/repo/contests/abc999/a/submission.cpp"),
     test_dir=Path("/repo/contests/abc999/a/test"),
     build_dir=Path("/repo/.atcoder-local/build/abc999/abc999_a"),
 )
@@ -66,6 +67,7 @@ def submission_context(tmp_path: Path) -> TaskContext:
         contest_dir=task_dir.parent,
         task_dir=task_dir,
         source_path=source_path,
+        submission_path=task_dir / "submission.cpp",
         test_dir=test_dir,
         build_dir=repository_root / ".atcoder-local/build/abc999/abc999_a",
     )

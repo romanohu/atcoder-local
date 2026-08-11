@@ -22,7 +22,8 @@ class TaskContext:
     contest_dir: Path
     task_dir: Path
     source_path: Path
-    test_dir: Path
+    submission_path: Path
+    test_dir: Path | None
     build_dir: Path
 
 
@@ -173,14 +174,26 @@ def _build_context(
     source_path = _resolve_within_owner(
         task_dir, _directory_value(task, "submit", config_path), "submit path"
     )
-    test_dir = _resolve_within_owner(
-        task_dir, _directory_value(task, "testdir", config_path), "test directory"
-    )
+    submission_path = (task_dir / "submission.cpp").resolve()
+    if source_path == submission_path:
+        raise WorkflowError(
+            "submit source conflicts with generated submission artifact: "
+            f"{submission_path}"
+        )
+
+    testdir = _optional_directory_value(task, "testdir", config_path)
+    test_dir: Path | None = None
+    if testdir is not None:
+        configured_test_dir = _resolve_within_owner(
+            task_dir, testdir, "test directory"
+        )
+        if configured_test_dir.exists() and not configured_test_dir.is_dir():
+            raise WorkflowError(f"test path is not a directory: {configured_test_dir}")
+        if configured_test_dir.is_dir():
+            test_dir = configured_test_dir
 
     if not source_path.is_file():
         raise WorkflowError(f"submit source does not exist: {source_path}")
-    if not test_dir.is_dir():
-        raise WorkflowError(f"test directory does not exist: {test_dir}")
 
     artifact_root = (repository_root / ".atcoder-local" / "build").resolve()
     build_dir = (artifact_root / contest_id / task_id).resolve()
@@ -197,6 +210,7 @@ def _build_context(
         contest_dir=contest_dir,
         task_dir=task_dir,
         source_path=source_path,
+        submission_path=submission_path,
         test_dir=test_dir,
         build_dir=build_dir,
     )
@@ -216,6 +230,20 @@ def _directory_value(task: dict[str, Any], key: str, config_path: Path) -> str:
     value = directory.get(key)
     if not isinstance(value, str):
         raise WorkflowError(f"task directory {key} is missing from {config_path}")
+    return value
+
+
+def _optional_directory_value(
+    task: dict[str, Any], key: str, config_path: Path
+) -> str | None:
+    directory = task.get("directory")
+    if not isinstance(directory, dict):
+        raise WorkflowError(f"task directory is missing from {config_path}")
+    value = directory.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise WorkflowError(f"task directory {key} is invalid in {config_path}")
     return value
 
 

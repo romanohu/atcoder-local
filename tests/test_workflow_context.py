@@ -16,13 +16,16 @@ def write_contest(
     submit: str = "main.cpp",
     contest_id: str = "abc999",
     task_id: str = "abc999_a",
+    testdir: str | None = "test",
 ) -> tuple[Path, Path]:
     contest_dir = root / relative_directory
     task_dir = contest_dir / "a"
-    test_dir = task_dir / "test"
     task_dir.mkdir(parents=True)
-    test_dir.mkdir()
     (task_dir / submit).write_text("source\n", encoding="utf-8")
+    directory = {"path": "a", "submit": submit}
+    if testdir is not None:
+        (task_dir / testdir).mkdir()
+        directory["testdir"] = testdir
     config = {
         "contest": {
             "id": contest_id,
@@ -35,11 +38,7 @@ def write_contest(
                 "label": "A",
                 "title": "Task A",
                 "url": "https://atcoder.jp/contests/abc999/tasks/abc999_a",
-                "directory": {
-                    "path": "a",
-                    "submit": submit,
-                    "testdir": "test",
-                },
+                "directory": directory,
             }
         ],
     }
@@ -67,6 +66,7 @@ def test_discovers_task_context_from_configured_task_directory(tmp_path: Path) -
     assert context.contest_dir == contest_dir
     assert context.task_dir == task_dir
     assert context.source_path == task_dir / "main.cpp"
+    assert context.submission_path == task_dir / "submission.cpp"
     assert context.test_dir == task_dir / "test"
     assert context.build_dir == root / ".atcoder-local/build/abc999/abc999_a"
 
@@ -89,6 +89,50 @@ def test_resolves_non_cpp_submit_without_selecting_a_backend(tmp_path: Path) -> 
     context = resolve_task_context(task_dir)
 
     assert context.source_path == task_dir / "main.py"
+
+
+def test_resolves_missing_testdir_metadata_as_no_samples(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root, testdir=None)
+
+    context = resolve_task_context(task_dir)
+
+    assert context.test_dir is None
+
+
+def test_resolves_missing_configured_test_directory_as_no_samples(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    (task_dir / "test").rmdir()
+
+    context = resolve_task_context(task_dir)
+
+    assert context.test_dir is None
+
+
+def test_rejects_configured_test_path_that_is_not_directory(
+    tmp_path: Path,
+) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root)
+    (task_dir / "test").rmdir()
+    (task_dir / "test").write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(WorkflowError, match="test path is not a directory"):
+        resolve_task_context(task_dir)
+
+
+def test_rejects_source_named_generated_submission(tmp_path: Path) -> None:
+    root = repository(tmp_path)
+    _, task_dir = write_contest(root, submit="submission.cpp")
+
+    with pytest.raises(
+        WorkflowError,
+        match="submit source conflicts with generated submission artifact",
+    ):
+        resolve_task_context(task_dir)
 
 
 @pytest.mark.parametrize(
