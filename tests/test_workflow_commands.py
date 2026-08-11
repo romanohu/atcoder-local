@@ -278,8 +278,10 @@ def test_readme_documents_test_owned_submission_artifact() -> None:
 def test_readme_documents_installed_acc_and_task_local_submission() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "uv tool install --editable ." in readme
-    assert "uv tool install --force --editable ." in readme
+    assert "uv tool install ." in readme
+    assert "uv tool install --force ." in readme
+    assert "uv tool install --editable ." not in readme
+    assert "uv tool install --force --editable ." not in readme
     assert "インストール済みの `acc` で `acc doctor`" in readme
     assert "インストール済みの `acc` または互換用ラッパー" in readme
     assert "各タスクディレクトリの `submission.cpp`" in readme

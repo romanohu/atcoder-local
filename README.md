@@ -24,15 +24,15 @@ git clone <url>
 cd atcoder-local
 uv sync --group dev
 npm install -g atcoder-cli@2.2.0
-uv tool install --editable .
+uv tool install .
 ```
 
-`uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。`uv tool install --editable .` の後は、新しいシェルでもすぐに `acc` を使えます。
+`uv sync --group dev` は `online-judge-tools`、`oj-bundle`、`aclogin` とテスト用の `pytest` を仮想環境へインストールします。`atcoder-cli` は npm のグローバルパッケージとしてインストールします。`uv tool install .` の後は、新しいシェルでもすぐに `acc` を使えます。インストール済みのコマンドはインストール時のチェックアウトの絶対パスに依存しないため、後からリポジトリを移動してもそのまま使用できます。
 
 パッケージのメタデータまたは依存関係を更新した後は、次を実行してインストール済みコマンドを更新します。
 
 ```sh
-uv tool install --force --editable .
+uv tool install --force .
 ```
 
 ## atcoder-cli の設定
@@ -55,7 +55,7 @@ uv run aclogin
 
 ## bash / zsh の互換用ラッパー
 
-通常は前節の `uv tool install --editable .` を使用してください。既存のシェル設定との互換性のために、使用するシェルに合わせてリポジトリルートでどちらか一方を `source` することもできます。
+通常は前節の `uv tool install .` を使用してください。既存のシェル設定との互換性のために、使用するシェルに合わせてリポジトリルートでどちらか一方を `source` することもできます。
 
 zsh:
 
@@ -133,6 +133,7 @@ AtCoder はソースコード提出に CAPTCHA を導入しています。公式
 
 ## トラブルシューティング
 
+- 以前に編集可能モードで `acc` をインストールし、元のチェックアウトを移動または削除した場合は、`uv tool install --force .` を実行してインストールを更新してください。
 - `acc doctor` が `current shell is not using the repository wrapper` と表示する場合は、インストール済みの `acc` を使用しているか確認してください。互換用ラッパーを選んでいる場合は、使用中のシェルに対応する `tools/acc-wrapper.zsh` または `tools/acc-wrapper.bash` をもう一度 `source` してください。
 - `no C++23 compiler found` の場合は C++23 対応コンパイラをインストールし、必要ならその実行ファイルを `CXX` に指定してから再診断してください。コンパイラが未導入の環境で GNU GCC が利用できるとは仮定しないでください。
 - `oj-bundle` が GNU C++ コンパイラを要求して失敗する場合は、GNU GCC の導入状況と `CXX` を確認してから `acc test` を再実行してください。
