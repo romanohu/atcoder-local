@@ -49,4 +49,4 @@ def console_main() -> NoReturn:
 
 
 if __name__ == "__main__":
-    console_main()
+    raise SystemExit(main())

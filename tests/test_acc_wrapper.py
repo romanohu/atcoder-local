@@ -153,6 +153,29 @@ def test_absolute_script_execution_delegates_raw_acc() -> None:
     assert completed.stderr == "native-err\n"
 
 
+def test_direct_script_doctor_rejects_unmarked_invocation() -> None:
+    root = Path(__file__).parents[1]
+    script_path = root / "tools" / "acc_wrapper.py"
+    environment = dict(os.environ)
+    environment.pop("ATCODER_LOCAL_CONSOLE", None)
+    environment.pop("ATCODER_LOCAL_WRAPPER", None)
+
+    completed = subprocess.run(
+        [sys.executable, str(script_path), "doctor"],
+        cwd=root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert (
+        "[error] shell-wrapper: current shell is not using the repository wrapper"
+        in completed.stdout
+    )
+
+
 def test_bash_and_zsh_wrappers_dispatch_with_current_marker() -> None:
     root = Path(__file__).parents[1]
     cases = [

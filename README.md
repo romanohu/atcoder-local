@@ -79,7 +79,7 @@ source "$(pwd)/tools/acc-wrapper.bash"
 acc doctor
 ```
 
-`acc doctor` は `uv`、`atcoder-cli`、`oj`、`oj-bundle`、C++23 コンパイラ、同梱 ACL とローカルヘッダー、現在のシェルのラッパー有効化を順に確認します。`[error]` があれば終了コード 1、GCC 15 以外の利用など `[warning]` だけであれば終了コード 0 です。
+`acc doctor` は `uv`、`atcoder-cli`、`oj`、`oj-bundle`、C++23 コンパイラ、同梱 ACL とローカルヘッダー、インストール済みの `acc` または互換用ラッパーの有効化を順に確認します。`[error]` があれば終了コード 1、GCC 15 以外の利用など `[warning]` だけであれば終了コード 0 です。
 
 ## コンテストの作成
 
