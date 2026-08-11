@@ -126,6 +126,58 @@ def test_console_main_marks_installed_entry_before_dispatching() -> None:
     main_call.assert_called_once_with()
 
 
+def test_console_main_prepends_runtime_bin_to_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_python = Path("/isolated/tool/bin/python")
+    observed_path: str | None = None
+
+    def wrapped_main() -> int:
+        nonlocal observed_path
+        observed_path = os.environ.get("PATH")
+        return 0
+
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    monkeypatch.setattr(sys, "executable", str(runtime_python))
+    with (
+        patch("tools.acc_wrapper.main", side_effect=wrapped_main),
+        pytest.raises(SystemExit) as raised,
+    ):
+        console_main()
+
+    assert raised.value.code == 0
+    assert observed_path == os.pathsep.join(
+        [str(runtime_python.parent), "/usr/bin", "/bin"]
+    )
+
+
+def test_console_main_moves_existing_runtime_bin_to_front_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_python = Path("/isolated/tool/bin/python")
+    observed_path: str | None = None
+
+    def wrapped_main() -> int:
+        nonlocal observed_path
+        observed_path = os.environ.get("PATH")
+        return 0
+
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join(["/usr/bin", str(runtime_python.parent), "/bin"]),
+    )
+    monkeypatch.setattr(sys, "executable", str(runtime_python))
+    with (
+        patch("tools.acc_wrapper.main", side_effect=wrapped_main),
+        pytest.raises(SystemExit),
+    ):
+        console_main()
+
+    assert observed_path == os.pathsep.join(
+        [str(runtime_python.parent), "/usr/bin", "/bin"]
+    )
+
+
 def test_absolute_script_execution_delegates_raw_acc() -> None:
     script_path = Path(__file__).parents[1] / "tools" / "acc_wrapper.py"
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import NoReturn
 
@@ -14,6 +14,18 @@ else:
 
 
 CUSTOM_COMMANDS = {"build", "run", "test", "submit", "doctor"}
+
+
+def _prepend_runtime_bin_to_path(
+    environ: MutableMapping[str, str], executable: str
+) -> None:
+    runtime_bin = str(Path(executable).parent)
+    existing = [
+        entry
+        for entry in environ.get("PATH", "").split(os.pathsep)
+        if entry and entry != runtime_bin
+    ]
+    environ["PATH"] = os.pathsep.join([runtime_bin, *existing])
 
 
 def main(
@@ -45,6 +57,7 @@ def main(
 
 def console_main() -> NoReturn:
     os.environ["ATCODER_LOCAL_CONSOLE"] = "1"
+    _prepend_runtime_bin_to_path(os.environ, sys.executable)
     raise SystemExit(main())
 
 
