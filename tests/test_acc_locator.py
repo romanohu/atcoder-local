@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from tools.atcoder_workflow.acc_locator import find_upstream_acc
 
 
@@ -86,3 +88,47 @@ def test_returns_none_without_distinct_acc(tmp_path: Path) -> None:
     wrapper = executable(tmp_path / "wrapper/acc")
 
     assert find_upstream_acc({"PATH": str(wrapper.parent)}, wrapper) is None
+
+
+def test_finds_npm_global_acc_when_global_bin_is_not_on_path(
+    tmp_path: Path,
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    prefix = tmp_path / "npm-global"
+    upstream = executable(prefix / "bin/acc")
+    search_bin = tmp_path / "search-bin"
+    search_bin.mkdir()
+    npm = search_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        "test \"$1 $2\" = \"prefix --global\" || exit 9\n"
+        f"printf '%s\\n' '{prefix}'\n",
+        encoding="utf-8",
+    )
+    npm.chmod(0o755)
+
+    assert find_upstream_acc(
+        {"PATH": str(search_bin)}, active
+    ) == str(upstream.resolve())
+
+
+@pytest.mark.parametrize(
+    ("output", "exit_code"),
+    [("", 0), ("relative-prefix", 0), ("/unused", 9)],
+)
+def test_ignores_invalid_npm_global_prefix(
+    tmp_path: Path, output: str, exit_code: int
+) -> None:
+    active = installed_wrapper(tmp_path / "uv-tool/bin/acc")
+    search_bin = tmp_path / "search-bin"
+    search_bin.mkdir()
+    npm = search_bin / "npm"
+    npm.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' '{output}'\n"
+        f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+    npm.chmod(0o755)
+
+    assert find_upstream_acc({"PATH": str(search_bin)}, active) is None
