@@ -8,6 +8,7 @@ import shutil
 import sys
 
 from . import WorkflowError
+from .acc_locator import find_upstream_acc
 from .commands import (
     WorkflowDependencies,
     run_doctor,
@@ -69,7 +70,13 @@ def _default_dependencies() -> WorkflowDependencies:
     return WorkflowDependencies(
         runner=run_process,
         environ=os.environ,
-        which=shutil.which,
+        which=_locate_executable,
         input_fn=input,
         stdin_isatty=sys.stdin.isatty,
     )
+
+
+def _locate_executable(name: str) -> str | None:
+    if name == "acc":
+        return find_upstream_acc(os.environ)
+    return shutil.which(name)

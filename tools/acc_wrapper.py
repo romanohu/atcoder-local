@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
+
+if __package__:
+    from .atcoder_workflow.acc_locator import find_upstream_acc
+else:
+    from atcoder_workflow.acc_locator import find_upstream_acc
 
 
 CUSTOM_COMMANDS = {"build", "run", "test", "submit", "doctor"}
@@ -29,8 +36,16 @@ def main(
 
     if acc_runner is not None:
         return acc_runner(args)
-    return subprocess.run(["acc", *args], check=False).returncode
+    raw_acc = find_upstream_acc(os.environ)
+    if raw_acc is None:
+        print("[acc-wrapper] upstream acc executable was not found", file=sys.stderr)
+        return 1
+    return subprocess.run([raw_acc, *args], check=False).returncode
+
+
+def console_main() -> NoReturn:
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    console_main()

@@ -9,7 +9,9 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from tools.acc_wrapper import main
+import pytest
+
+from tools.acc_wrapper import console_main, main
 
 
 def test_wrapper_supports_injected_context_and_collaborators() -> None:
@@ -77,11 +79,43 @@ def test_new_delegates_once_and_returns_exact_acc_code() -> None:
 def test_default_raw_acc_delegation_uses_exact_command() -> None:
     completed = subprocess.CompletedProcess(args=[], returncode=17)
 
-    with patch("tools.acc_wrapper.subprocess.run", return_value=completed) as run:
+    with (
+        patch(
+            "tools.acc_wrapper.find_upstream_acc",
+            return_value="/opt/native/bin/acc",
+        ),
+        patch("tools.acc_wrapper.subprocess.run", return_value=completed) as run,
+    ):
         result = main(["new", "abc454"])
 
     assert result == 17
-    run.assert_called_once_with(["acc", "new", "abc454"], check=False)
+    run.assert_called_once_with(
+        ["/opt/native/bin/acc", "new", "abc454"], check=False
+    )
+
+
+def test_default_raw_acc_delegation_reports_missing_upstream(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch("tools.acc_wrapper.find_upstream_acc", return_value=None):
+        result = main(["new", "abc454"])
+
+    assert result == 1
+    assert (
+        capsys.readouterr().err
+        == "[acc-wrapper] upstream acc executable was not found\n"
+    )
+
+
+def test_console_main_exits_with_main_return_code() -> None:
+    with (
+        patch("tools.acc_wrapper.main", return_value=23) as wrapped_main,
+        pytest.raises(SystemExit) as raised,
+    ):
+        console_main()
+
+    assert raised.value.code == 23
+    wrapped_main.assert_called_once_with()
 
 
 def test_absolute_script_execution_delegates_raw_acc() -> None:
@@ -125,11 +159,15 @@ def test_bash_and_zsh_wrappers_dispatch_with_current_marker() -> None:
             fake_uv.write_text(
                 "#!/bin/sh\n"
                 "printf 'marker=%s\\n' \"$ATCODER_LOCAL_WRAPPER\"\n"
+                "printf 'raw=%s\\n' \"$ATCODER_LOCAL_RAW_ACC\"\n"
                 "for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n"
                 "exit 37\n",
                 encoding="utf-8",
             )
             fake_uv.chmod(0o755)
+            fake_acc = temp / "acc"
+            fake_acc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_acc.chmod(0o755)
             wrapper = root / "tools" / f"acc-wrapper.{name}"
             command = f"source {shlex.quote(str(wrapper))}; acc test --debug"
             environment = dict(os.environ)
@@ -147,6 +185,7 @@ def test_bash_and_zsh_wrappers_dispatch_with_current_marker() -> None:
         assert completed.returncode == 37
         assert completed.stdout.splitlines() == [
             "marker=1",
+            f"raw={fake_acc}",
             "arg=run",
             "arg=python",
             f"arg={root / 'tools' / 'acc_wrapper.py'}",

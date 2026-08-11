@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tools.atcoder_workflow import WorkflowError
-from tools.atcoder_workflow.cli import main
+from tools.atcoder_workflow.cli import _default_dependencies, main
 from tools.atcoder_workflow.commands import (
     WorkflowDependencies,
     run_build,
@@ -955,6 +955,25 @@ def test_cli_dispatches_submit_and_propagates_raw_exit_code() -> None:
     assert result == 29
     resolve.assert_called_once_with(CONTEXT.repository_root, "abc999", "a")
     submit.assert_called_once_with(CONTEXT, DEPENDENCIES)
+
+
+def test_default_dependencies_locate_acc_without_recursing_into_wrapper() -> None:
+    with (
+        patch(
+            "tools.atcoder_workflow.cli.find_upstream_acc",
+            return_value="/opt/native/bin/acc",
+        ) as find_acc,
+        patch(
+            "tools.atcoder_workflow.cli.shutil.which",
+            return_value="/opt/toolchain/bin/g++",
+        ) as which,
+    ):
+        dependencies = _default_dependencies()
+        assert dependencies.which("acc") == "/opt/native/bin/acc"
+        assert dependencies.which("g++") == "/opt/toolchain/bin/g++"
+
+    find_acc.assert_called_once_with(os.environ)
+    which.assert_called_once_with("g++")
 
 
 def test_cli_resolves_root_flags_once_and_dispatches_release_build() -> None:
