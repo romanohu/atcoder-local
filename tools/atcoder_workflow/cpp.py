@@ -33,6 +33,8 @@ def compile_cpp(
             [
                 compiler.executable,
                 *compiler_flags(mode, library_dir),
+                "-x",
+                "c++",
                 str(source_path),
                 "-o",
                 str(temporary),

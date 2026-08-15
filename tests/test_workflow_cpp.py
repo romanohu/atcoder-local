@@ -65,6 +65,38 @@ def test_failed_compile_preserves_old_output_and_removes_temporary(
     assert not output.with_name(".main.tmp").exists()
 
 
+def test_compile_explicitly_marks_pending_source_as_cpp(tmp_path: Path) -> None:
+    source = tmp_path / ".submission.cpp.pending"
+    source.write_text("int main() {}\n", encoding="utf-8")
+    output = tmp_path / ".atcoder-local/build/abc999/a/submission-main"
+    calls: list[list[str]] = []
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        cwd: Path | str | None = None,
+        env: Mapping[str, str] | None = None,
+        capture_output: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output
+        calls.append(list(argv))
+        Path(argv[-1]).write_text("new binary", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    compile_cpp(
+        source_path=source,
+        output_path=output,
+        working_dir=tmp_path,
+        compiler=GCC15,
+        mode=BuildMode.RELEASE,
+        library_dir=tmp_path / "library",
+        runner=runner,
+    )
+
+    source_index = calls[0].index(str(source))
+    assert calls[0][source_index - 2 : source_index] == ["-x", "c++"]
+
+
 def test_successful_compile_atomically_replaces_output(tmp_path: Path) -> None:
     source = tmp_path / "main.cpp"
     source.write_text("int main() {}\n", encoding="utf-8")
@@ -111,6 +143,8 @@ def test_successful_compile_atomically_replaces_output(tmp_path: Path) -> None:
                 "-DATCODER",
                 "-I",
                 str(tmp_path / "library"),
+                "-x",
+                "c++",
                 str(source),
                 "-o",
                 str(temporary),
