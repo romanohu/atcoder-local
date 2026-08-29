@@ -198,7 +198,7 @@ def run_tests(
             context, dependencies, mode
         )
         assert prepared_candidate == candidate_path
-        if context.test_dir is None:
+        if context.test_dir is None or not any(context.test_dir.glob("*.in")):
             print(
                 "[warning] sample tests are unavailable; "
                 "submission.cpp was not sample-tested",

@@ -13,6 +13,10 @@ from .runner import ProcessRunner
 UNBUNDLED_LOCAL_INCLUDE = re.compile(
     r"^\s*#\s*include\s*<atcoder_local/[^>]+>", re.MULTILINE
 )
+SUBMISSION_ATTRIBUTION = (
+    "// Uses code from romanohu/atcoder-local: "
+    "https://github.com/romanohu/atcoder-local\n"
+)
 
 
 def compile_cpp(
@@ -73,7 +77,10 @@ def bundle_cpp(
         if result.returncode != 0:
             raise WorkflowError(f"bundle failed for {source_path}")
         _reject_unbundled_local_includes(result.stdout, source_path)
-        temporary.write_text(result.stdout, encoding="utf-8")
+        temporary.write_text(
+            f"{SUBMISSION_ATTRIBUTION}\n{result.stdout}",
+            encoding="utf-8",
+        )
         temporary.replace(output_path)
     except OSError as error:
         raise WorkflowError(f"bundle failed for {source_path}") from error

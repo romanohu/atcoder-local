@@ -59,6 +59,8 @@ def submission_context(tmp_path: Path) -> TaskContext:
     test_dir.mkdir(parents=True)
     library_header.parent.mkdir(parents=True)
     source_path.write_text("int main() {}\n", encoding="utf-8")
+    (test_dir / "sample-1.in").write_text("\n", encoding="utf-8")
+    (test_dir / "sample-1.out").write_text("\n", encoding="utf-8")
     library_header.write_text("#pragma once\n", encoding="utf-8")
     return TaskContext(
         repository_root=repository_root,
@@ -581,6 +583,27 @@ def test_run_tests_without_samples_warns_and_publishes(
     assert events == ["bundle", "compile"]
     samples.assert_not_called()
     assert published.read_text(encoding="utf-8") == "bundled source\n"
+    assert capsys.readouterr().err == (
+        "[warning] sample tests are unavailable; "
+        "submission.cpp was not sample-tested\n"
+    )
+
+
+def test_run_tests_with_empty_sample_directory_warns_and_publishes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    context = submission_context(tmp_path)
+    assert context.test_dir is not None
+    (context.test_dir / "sample-1.in").unlink()
+    (context.test_dir / "sample-1.out").unlink()
+
+    with patched_test_stages(context) as (events, _, _, samples):
+        assert run_tests(context, DEPENDENCIES) == 0
+
+    assert events == ["bundle", "compile"]
+    samples.assert_not_called()
+    assert context.submission_path.read_text(encoding="utf-8") == "bundled source\n"
     assert capsys.readouterr().err == (
         "[warning] sample tests are unavailable; "
         "submission.cpp was not sample-tested\n"

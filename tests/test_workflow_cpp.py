@@ -206,7 +206,12 @@ def test_successful_bundle_atomically_replaces_output(tmp_path: Path) -> None:
     ) -> subprocess.CompletedProcess[str]:
         del env
         calls.append((list(argv), cwd, capture_output))
-        return subprocess.CompletedProcess(argv, 0, "expanded source\n", "")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            '#line 1 "main.cpp"\n\nexpanded source\n',
+            "",
+        )
 
     result = bundle_cpp(
         source_path=source,
@@ -217,7 +222,12 @@ def test_successful_bundle_atomically_replaces_output(tmp_path: Path) -> None:
     )
 
     assert result == output
-    assert output.read_text(encoding="utf-8") == "expanded source\n"
+    assert output.read_text(encoding="utf-8") == (
+        "// Uses code from romanohu/atcoder-local: "
+        "https://github.com/romanohu/atcoder-local\n\n"
+        '#line 1 "main.cpp"\n\n'
+        "expanded source\n"
+    )
     assert not output.with_name(".bundled.cpp.tmp").exists()
     assert calls == [
         (
